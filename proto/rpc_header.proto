@@ -1,0 +1,10 @@
+syntax = "proto3";
+
+package tinyrpc;
+
+// RPC 请求头
+message RpcHeader {
+  string service_name = 1;
+  string method_name = 2;
+  uint32 args_size = 3;
+}
