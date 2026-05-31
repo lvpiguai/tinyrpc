@@ -15,7 +15,19 @@ message AddResponse {
     int32 result = 1;
 }
 
+// Sub 请求
+message SubRequest {
+  int32 a = 1;
+  int32 b = 2;
+}
+
+// Sub 响应
+message SubResponse {
+  int32 result = 1;
+}
+
 // 计算器服务
 service CalculatorService{
     rpc Add(AddRequest) returns (AddResponse);
+    rpc Sub(SubRequest) returns (SubResponse);
 }

@@ -27,6 +27,23 @@ public:
             done->Run();
         }
     }
+    // Sub 业务实现
+    void Sub(google::protobuf::RpcController* controller,
+             const tinyrpc::SubRequest* request,
+             tinyrpc::SubResponse* response,
+             google::protobuf::Closure* done) override {
+        int a = request->a();
+        int b = request->b();
+
+        int result = a - b;
+        response->set_result(result);
+
+        std::cout << "call Sub: " << a << " - " << b << " = " << result << std::endl;
+
+        if (done) {
+            done->Run();
+        }
+    }
 };
 
 int main() {
