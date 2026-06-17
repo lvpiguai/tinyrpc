@@ -30,6 +30,7 @@ add_library(tinyrpc_lib
     src/rpc_channel.cpp
     src/rpc_provider.cpp
     src/rpc_controller.cpp
+    src/rpc_codec.cpp
     ${PROTO_SRCS}
     ${PROTO_HDRS}
 )
