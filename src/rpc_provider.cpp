@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <iostream>
 #include <string>
+#include <thread>
 
 namespace tinyrpc {
 
@@ -90,7 +91,7 @@ void RpcProvider::run(const std::string& ip, uint16_t port) {
             continue;
         }
 
-        handleClient(client_fd);
+        std::thread(&RpcProvider::handleClient, this, client_fd).detach();
     }
 }
 
