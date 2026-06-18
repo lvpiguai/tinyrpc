@@ -31,6 +31,7 @@ add_library(tinyrpc_lib
     src/rpc_provider.cpp
     src/rpc_controller.cpp
     src/rpc_codec.cpp
+    src/registry_client.cpp
     ${PROTO_SRCS}
     ${PROTO_HDRS}
 )
@@ -55,5 +56,14 @@ add_executable(client
 )
 
 target_link_libraries(client
+    tinyrpc_lib
+)
+
+# 生成注册中心程序
+add_executable(registry
+    example/registry.cpp
+)
+
+target_link_libraries(registry
     tinyrpc_lib
 )

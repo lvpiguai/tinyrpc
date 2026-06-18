@@ -123,4 +123,24 @@ bool TcpSocket::recvAll(int fd, std::string& out, size_t len) {
     return recvAll(fd, out.data(), len);
 }
 
+bool TcpSocket::recvLine(int fd, std::string& line) {
+    line.clear();
+
+    char ch = '\0';
+    while (true) {
+        ssize_t n = recv(fd, &ch, 1, 0);
+        if (n <= 0) {
+            return false;
+        }
+
+        if (ch == '\n') {
+            return true;
+        }
+
+        if (ch != '\r') {
+            line.push_back(ch);
+        }
+    }
+}
+
 } // namespace tinyrpc

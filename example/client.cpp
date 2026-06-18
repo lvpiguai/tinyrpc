@@ -6,7 +6,8 @@
 
 int main() {
     // 创建 RPC 通道
-    tinyrpc::RpcChannel channel("127.0.0.1", 8000);
+    tinyrpc::RpcChannel channel;
+    channel.setRegistry("127.0.0.1", 9000);
 
     // 创建客户端 stub
     tinyrpc::CalculatorService_Stub stub(&channel);

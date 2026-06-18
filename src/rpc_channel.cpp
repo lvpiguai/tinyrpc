@@ -1,5 +1,6 @@
 #include "rpc_channel.h"
 
+#include "registry_client.h"
 #include "rpc_codec.h"
 #include "rpc_header.pb.h"
 #include "tcp_socket.h"
@@ -12,8 +13,17 @@
 
 namespace tinyrpc {
 
+RpcChannel::RpcChannel()
+    : port_(0) {}
+
 RpcChannel::RpcChannel(const std::string& ip, uint16_t port)
     : ip_(ip), port_(port) {}
+
+void RpcChannel::setRegistry(const std::string& ip, uint16_t port) {
+    use_registry_ = true;
+    registry_ip_ = ip;
+    registry_port_ = port;
+}
 
 void RpcChannel::CallMethod(const google::protobuf::MethodDescriptor* method,
                             google::protobuf::RpcController* controller,
@@ -37,8 +47,22 @@ void RpcChannel::CallMethod(const google::protobuf::MethodDescriptor* method,
     header.set_method_name(method->name());
     header.set_args_size(static_cast<uint32_t>(args_str.size()));
 
+    std::string target_ip = ip_;
+    uint16_t target_port = port_;
+    if (use_registry_) {
+        RegistryClient registry(registry_ip_, registry_port_);
+        if (!registry.discoverService(header.service_name(), target_ip, target_port)) {
+            std::string err = "discover service failed";
+            if (controller) {
+                controller->SetFailed(err);
+            }
+            std::cerr << err << ": " << header.service_name() << std::endl;
+            return;
+        }
+    }
+
     // 连接服务端
-    int fd = TcpSocket::connectToServer(ip_, port_);
+    int fd = TcpSocket::connectToServer(target_ip, target_port);
     if (fd < 0) {
         std::string err = "connect server failed";
         if (controller) {

@@ -13,6 +13,8 @@ class RpcProvider {
 public:
     void registerService(google::protobuf::Service* service);
 
+    void setRegistry(const std::string& ip, uint16_t port);
+
     void run(const std::string& ip, uint16_t port);
 
 private:
@@ -26,6 +28,9 @@ private:
 
 private:
     std::unordered_map<std::string, ServiceInfo> services_;
+    bool use_registry_ = false;
+    std::string registry_ip_;
+    uint16_t registry_port_ = 0;
 };
 
 } // namespace tinyrpc

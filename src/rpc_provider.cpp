@@ -1,5 +1,6 @@
 #include "rpc_provider.h"
 
+#include "registry_client.h"
 #include "rpc_codec.h"
 #include "rpc_header.pb.h"
 #include "tcp_socket.h"
@@ -66,6 +67,12 @@ void RpcProvider::registerService(google::protobuf::Service* service) {
     std::cout << "register service: " << service_desc->full_name() << std::endl;
 }
 
+void RpcProvider::setRegistry(const std::string& ip, uint16_t port) {
+    use_registry_ = true;
+    registry_ip_ = ip;
+    registry_port_ = port;
+}
+
 void RpcProvider::run(const std::string& ip, uint16_t port) {
     // 创建监听 socket
     int listen_fd = TcpSocket::createServerSocket(ip, port);
@@ -75,6 +82,15 @@ void RpcProvider::run(const std::string& ip, uint16_t port) {
     }
 
     std::cout << "tinyrpc server start at " << ip << ":" << port << std::endl;
+
+    if (use_registry_) {
+        RegistryClient registry(registry_ip_, registry_port_);
+        for (const auto& item : services_) {
+            if (!registry.registerService(item.first, ip, port)) {
+                std::cerr << "register service to registry failed: " << item.first << std::endl;
+            }
+        }
+    }
 
     // 循环处理客户端连接
     while (true) {

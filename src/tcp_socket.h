@@ -19,6 +19,8 @@ public:
     static bool recvAll(int fd, char* data, size_t len);
 
     static bool recvAll(int fd, std::string& out, size_t len);
+
+    static bool recvLine(int fd, std::string& line);
 };
 
 } // namespace tinyrpc

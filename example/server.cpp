@@ -53,6 +53,7 @@ int main() {
     // 注册并启动服务
     tinyrpc::RpcProvider provider;
     provider.registerService(&calculator_service);
+    provider.setRegistry("127.0.0.1", 9000);
 
     provider.run("127.0.0.1", 8000);
 
