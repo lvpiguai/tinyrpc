@@ -4,6 +4,7 @@
 #include "rpc_codec.h"
 #include "rpc_header.pb.h"
 #include "tcp_socket.h"
+#include "thread_pool.h"
 
 #include <netinet/in.h>
 #include <sys/socket.h>
@@ -73,6 +74,11 @@ void RpcProvider::setRegistry(const std::string& ip, uint16_t port) {
     registry_port_ = port;
 }
 
+void RpcProvider::setThreadPool(size_t worker_count, size_t max_queue_size) {
+    worker_count_ = worker_count;
+    max_queue_size_ = max_queue_size;
+}
+
 void RpcProvider::run(const std::string& ip, uint16_t port) {
     // 创建监听 socket
     int listen_fd = TcpSocket::createServerSocket(ip, port);
@@ -82,6 +88,19 @@ void RpcProvider::run(const std::string& ip, uint16_t port) {
     }
 
     std::cout << "tinyrpc server start at " << ip << ":" << port << std::endl;
+
+    // 创建 RPC 请求处理线程池
+    size_t worker_count = worker_count_;
+    if (worker_count == 0) {
+        worker_count = std::thread::hardware_concurrency();
+        if (worker_count == 0) {
+            worker_count = 4;
+        }
+    }
+
+    ThreadPool thread_pool(worker_count, max_queue_size_);
+    std::cout << "rpc thread pool start, workers: " << worker_count
+              << ", max queue size: " << max_queue_size_ << std::endl;
 
     if (use_registry_) {
         RegistryClient registry(registry_ip_, registry_port_);
@@ -103,7 +122,14 @@ void RpcProvider::run(const std::string& ip, uint16_t port) {
             continue;
         }
 
-        std::thread(&RpcProvider::handleClient, this, client_fd).detach();
+        // 将客户端连接交给线程池处理
+        bool submitted = thread_pool.submit([this, client_fd]() {
+            handleClient(client_fd);
+        });
+        if (!submitted) {
+            std::cerr << "rpc thread pool queue is full, reject connection" << std::endl;
+            close(client_fd);
+        }
     }
 }
 

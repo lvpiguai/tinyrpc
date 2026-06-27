@@ -47,14 +47,14 @@ public:
 };
 
 int main() {
-    // 创建服务对象
-    CalculatorServiceImpl calculator_service;
-
-    // 注册并启动服务
+    // 创建、配置 RpcProvider
     tinyrpc::RpcProvider provider;
-    provider.registerService(&calculator_service);
     provider.setRegistry("127.0.0.1", 9000);
+    provider.setThreadPool(4, 1024);
 
+    // 创建、注册、启动服务
+    CalculatorServiceImpl calculator_service;
+    provider.registerService(&calculator_service);
     provider.run("127.0.0.1", 8000);
 
     return 0;
