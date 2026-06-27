@@ -1,0 +1,51 @@
+<mxfile host="app.diagrams.net">
+  <diagram name="第 1 页" id="NJuyB5dUrEUoNUse-vGD">
+    <mxGraphModel dx="1193" dy="733" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="827" pageHeight="1169" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="0OR1MFicJLWUXB3W_XHi-3" edge="1" parent="1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;" value="">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="310" y="339.5" />
+              <mxPoint x="310" y="339.5" />
+            </Array>
+            <mxPoint x="270" y="339.5" as="sourcePoint" />
+            <mxPoint x="390" y="339.5" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="0OR1MFicJLWUXB3W_XHi-1" parent="1" style="rounded=0;whiteSpace=wrap;html=1;" value="客户端" vertex="1">
+          <mxGeometry height="60" width="120" x="150" y="310" as="geometry" />
+        </mxCell>
+        <mxCell id="0OR1MFicJLWUXB3W_XHi-2" parent="1" style="rounded=0;whiteSpace=wrap;html=1;" value="服务器" vertex="1">
+          <mxGeometry height="60" width="120" x="390" y="310" as="geometry" />
+        </mxCell>
+        <mxCell id="0OR1MFicJLWUXB3W_XHi-4" parent="1" style="rounded=0;whiteSpace=wrap;html=1;" value="注册中心" vertex="1">
+          <mxGeometry height="60" width="120" x="270" y="180" as="geometry" />
+        </mxCell>
+        <mxCell id="0OR1MFicJLWUXB3W_XHi-6" edge="1" parent="1" source="0OR1MFicJLWUXB3W_XHi-2" style="endArrow=classic;html=1;rounded=0;entryX=0.75;entryY=1;entryDx=0;entryDy=0;exitX=0.5;exitY=0;exitDx=0;exitDy=0;" target="0OR1MFicJLWUXB3W_XHi-4" value="">
+          <mxGeometry height="50" relative="1" width="50" as="geometry">
+            <mxPoint x="210" y="310" as="sourcePoint" />
+            <mxPoint x="260" y="260" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="0OR1MFicJLWUXB3W_XHi-8" parent="1" style="text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;rounded=0;" value="RPC 调用" vertex="1">
+          <mxGeometry height="30" width="60" x="300" y="310" as="geometry" />
+        </mxCell>
+        <mxCell id="0OR1MFicJLWUXB3W_XHi-11" edge="1" parent="1" source="0OR1MFicJLWUXB3W_XHi-1" style="endArrow=classic;html=1;rounded=0;exitX=0.5;exitY=0;exitDx=0;exitDy=0;entryX=0.308;entryY=0.983;entryDx=0;entryDy=0;entryPerimeter=0;" target="0OR1MFicJLWUXB3W_XHi-4" value="">
+          <mxGeometry height="50" relative="1" width="50" as="geometry">
+            <Array as="points" />
+            <mxPoint x="190" y="270" as="sourcePoint" />
+            <mxPoint x="330" y="240" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="0OR1MFicJLWUXB3W_XHi-12" parent="1" style="text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;rounded=0;" value="服务注册" vertex="1">
+          <mxGeometry height="30" width="60" x="384" y="250" as="geometry" />
+        </mxCell>
+        <mxCell id="0OR1MFicJLWUXB3W_XHi-13" parent="1" style="text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;rounded=0;" value="服务发现" vertex="1">
+          <mxGeometry height="30" width="60" x="220" y="250" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
