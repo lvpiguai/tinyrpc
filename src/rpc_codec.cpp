@@ -10,8 +10,8 @@
 namespace tinyrpc {
 
 bool RpcCodec::sendRequest(int fd,
-                           const RpcHeader& header,
-                           const std::string& args) {
+                           const RpcRequestHeader& header,
+                           const std::string& request_body) {
     std::string header_str;
     if (!header.SerializeToString(&header_str)) {
         return false;
@@ -22,12 +22,12 @@ bool RpcCodec::sendRequest(int fd,
 
     return TcpSocket::sendAll(fd, reinterpret_cast<char*>(&net_header_size), sizeof(net_header_size)) &&
            TcpSocket::sendAll(fd, header_str) &&
-           TcpSocket::sendAll(fd, args);
+           TcpSocket::sendAll(fd, request_body);
 }
 
 bool RpcCodec::recvRequest(int fd,
-                           RpcHeader& header,
-                           std::string& args) {
+                           RpcRequestHeader& header,
+                           std::string& request_body) {
     uint32_t net_header_size = 0;
 
     if (!TcpSocket::recvAll(fd, reinterpret_cast<char*>(&net_header_size), sizeof(net_header_size))) {
@@ -45,9 +45,9 @@ bool RpcCodec::recvRequest(int fd,
         return false;
     }
 
-    uint32_t args_size = header.args_size();
+    uint32_t request_size = header.request_size();
 
-    if (!TcpSocket::recvAll(fd, args, args_size)) {
+    if (!TcpSocket::recvAll(fd, request_body, request_size)) {
         return false;
     }
 
@@ -55,25 +55,42 @@ bool RpcCodec::recvRequest(int fd,
 }
 
 bool RpcCodec::sendResponse(int fd,
-                            const std::string& response) {
-    uint32_t response_size = static_cast<uint32_t>(response.size());
-    uint32_t net_response_size = htonl(response_size);
-
-    return TcpSocket::sendAll(fd, reinterpret_cast<char*>(&net_response_size), sizeof(net_response_size)) &&
-           TcpSocket::sendAll(fd, response);
-}
-
-bool RpcCodec::recvResponse(int fd,
-                            std::string& response) {
-    uint32_t net_response_size = 0;
-
-    if (!TcpSocket::recvAll(fd, reinterpret_cast<char*>(&net_response_size), sizeof(net_response_size))) {
+                            const RpcResponseHeader& header,
+                            const std::string& response_body) {
+    std::string header_str;
+    if (!header.SerializeToString(&header_str)) {
         return false;
     }
 
-    uint32_t response_size = ntohl(net_response_size);
+    uint32_t header_size = static_cast<uint32_t>(header_str.size());
+    uint32_t net_header_size = htonl(header_size);
 
-    return TcpSocket::recvAll(fd, response, response_size);
+    return TcpSocket::sendAll(fd, reinterpret_cast<char*>(&net_header_size), sizeof(net_header_size)) &&
+           TcpSocket::sendAll(fd, header_str) &&
+           TcpSocket::sendAll(fd, response_body);
+}
+
+bool RpcCodec::recvResponse(int fd,
+                            RpcResponseHeader& header,
+                            std::string& response_body) {
+    uint32_t net_header_size = 0;
+
+    if (!TcpSocket::recvAll(fd, reinterpret_cast<char*>(&net_header_size), sizeof(net_header_size))) {
+        return false;
+    }
+
+    uint32_t header_size = ntohl(net_header_size);
+
+    std::string header_str;
+    if (!TcpSocket::recvAll(fd, header_str, header_size)) {
+        return false;
+    }
+
+    if (!header.ParseFromString(header_str)) {
+        return false;
+    }
+
+    return TcpSocket::recvAll(fd, response_body, header.response_size());
 }
 
 } // namespace tinyrpc

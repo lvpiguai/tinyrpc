@@ -101,9 +101,10 @@ RPC 调用：[客户端] Stub -> RpcChannel -> RpcCodec -> TcpSocket -> RpcProvi
 | 类型 | 说明 |
 | --- | --- |
 | 业务消息 | 用户 `.proto` 定义的请求/响应对象，如 `AddRequest`、`AddResponse` |
-| RPC 头消息 | 框架定义的 `RpcHeader`，记录 `service_name`、`method_name`、`args_size` |
-| RPC 请求报文 | `header_size(4字节) + RpcHeader_bytes + request_bytes` |
-| RPC 响应报文 | `response_size(4字节) + response_bytes` |
+| RPC 请求头消息 | 框架定义的 `RpcRequestHeader`，记录 `service_name`、`method_name`、`request_size` |
+| RPC 响应头消息 | 框架定义的 `RpcResponseHeader`，记录 `error_code`、`error_text`、`response_size` |
+| RPC 请求报文 | `request_header_size(4字节) + request_header + request_body` |
+| RPC 响应报文 | `response_header_size(4字节) + response_header + response_body` |
 | 注册中心数据 | 服务注册/发现数据，包括 `service_name`、`ip`、`port` |
 
 ## 时序图
@@ -146,21 +147,22 @@ sequenceDiagram
     Registry-->>RegistryClient: ip, port
     RegistryClient-->>Channel: 服务地址
 
-    Channel->>Channel: 构造 RpcHeader，序列化 request
-    Channel->>Codec: RpcHeader + request_bytes
+    Channel->>Channel: 构造 RpcRequestHeader，序列化 request
+    Channel->>Codec: RpcRequestHeader + request_body
     Codec->>Socket: RPC 请求报文
     Socket->>Provider: RPC 请求报文
 
     Provider->>Codec: 解码请求报文
-    Codec-->>Provider: RpcHeader + request_bytes
+    Codec-->>Provider: RpcRequestHeader + request_body
     Provider->>Service: 调用业务方法
     Service-->>Provider: 业务响应
 
-    Provider->>Codec: response_bytes
+    Provider->>Codec: RpcResponseHeader + response_body
     Codec->>Socket: RPC 响应报文
     Socket-->>Channel: RPC 响应报文
     Channel->>Codec: 解码响应报文
-    Codec-->>Channel: response_bytes
+    Codec-->>Channel: RpcResponseHeader + response_body
+    Channel->>Channel: 检查 error_code
     Channel-->>Stub: 填充 response
     Stub-->>Client: 返回调用结果
 ```

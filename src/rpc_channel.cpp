@@ -30,9 +30,9 @@ void RpcChannel::CallMethod(const google::protobuf::MethodDescriptor* method,
                             const google::protobuf::Message* request,
                             google::protobuf::Message* response,
                             google::protobuf::Closure* done) {
-    // 序列化 protobuf 请求对象为参数字节
-    std::string args_str;
-    if (!request->SerializeToString(&args_str)) {
+    // 序列化 protobuf 请求对象为请求体字节
+    std::string request_body;
+    if (!request->SerializeToString(&request_body)) {
         std::string err = "serialize request failed";
         if (controller) {
             controller->SetFailed(err);
@@ -42,10 +42,10 @@ void RpcChannel::CallMethod(const google::protobuf::MethodDescriptor* method,
     }
 
     // 构造 RPC 请求头
-    RpcHeader header;
+    RpcRequestHeader header;
     header.set_service_name(method->service()->full_name());
     header.set_method_name(method->name());
-    header.set_args_size(static_cast<uint32_t>(args_str.size()));
+    header.set_request_size(static_cast<uint32_t>(request_body.size()));
 
     std::string target_ip = ip_;
     uint16_t target_port = port_;
@@ -73,7 +73,7 @@ void RpcChannel::CallMethod(const google::protobuf::MethodDescriptor* method,
     }
 
     // 发送 RPC 请求消息
-    if (!RpcCodec::sendRequest(fd, header, args_str)) {
+    if (!RpcCodec::sendRequest(fd, header, request_body)) {
         std::string err = "send rpc request failed";
         std::cerr << err << std::endl;
         if (controller) {
@@ -84,8 +84,9 @@ void RpcChannel::CallMethod(const google::protobuf::MethodDescriptor* method,
     }
 
     // 接收 RPC 响应字节
-    std::string response_str;
-    if (!RpcCodec::recvResponse(fd, response_str)) {
+    RpcResponseHeader response_header;
+    std::string response_body;
+    if (!RpcCodec::recvResponse(fd, response_header, response_body)) {
         std::string err = "recv rpc response failed";
         std::cerr << err << std::endl;
         if (controller) {
@@ -95,8 +96,21 @@ void RpcChannel::CallMethod(const google::protobuf::MethodDescriptor* method,
         return;
     }
 
+    if (response_header.error_code() != RPC_OK) {
+        std::string err = response_header.error_text();
+        if (err.empty()) {
+            err = "rpc server error: " + std::to_string(response_header.error_code());
+        }
+        if (controller) {
+            controller->SetFailed(err);
+        }
+        std::cerr << err << std::endl;
+        close(fd);
+        return;
+    }
+
     // 解析 protobuf 响应对象
-    if (!response->ParseFromString(response_str)) {
+    if (!response->ParseFromString(response_body)) {
         std::string err = "parse response failed";
         if (controller) {
             controller->SetFailed(err);
