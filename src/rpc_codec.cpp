@@ -4,16 +4,36 @@
 
 #include <arpa/inet.h>
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 
 namespace tinyrpc {
 
+namespace {
+
+constexpr uint32_t kMaxRpcHeaderSize = 64 * 1024;
+constexpr uint32_t kMaxRpcBodySize = 16 * 1024 * 1024;
+
+bool isValidBodySize(std::size_t actual_size, uint32_t declared_size) {
+    return actual_size <= kMaxRpcBodySize && actual_size == declared_size;
+}
+
+} // namespace
+
 bool RpcCodec::sendRequest(int fd,
                            const RpcRequestHeader& header,
                            const std::string& request_body) {
+    if (!isValidBodySize(request_body.size(), header.request_size())) {
+        return false;
+    }
+
     std::string header_str;
     if (!header.SerializeToString(&header_str)) {
+        return false;
+    }
+
+    if (header_str.size() > kMaxRpcHeaderSize) {
         return false;
     }
 
@@ -35,6 +55,9 @@ bool RpcCodec::recvRequest(int fd,
     }
 
     uint32_t header_size = ntohl(net_header_size);
+    if (header_size > kMaxRpcHeaderSize) {
+        return false;
+    }
 
     std::string header_str;
     if (!TcpSocket::recvAll(fd, header_str, header_size)) {
@@ -46,6 +69,9 @@ bool RpcCodec::recvRequest(int fd,
     }
 
     uint32_t request_size = header.request_size();
+    if (request_size > kMaxRpcBodySize) {
+        return false;
+    }
 
     if (!TcpSocket::recvAll(fd, request_body, request_size)) {
         return false;
@@ -57,8 +83,16 @@ bool RpcCodec::recvRequest(int fd,
 bool RpcCodec::sendResponse(int fd,
                             const RpcResponseHeader& header,
                             const std::string& response_body) {
+    if (!isValidBodySize(response_body.size(), header.response_size())) {
+        return false;
+    }
+
     std::string header_str;
     if (!header.SerializeToString(&header_str)) {
+        return false;
+    }
+
+    if (header_str.size() > kMaxRpcHeaderSize) {
         return false;
     }
 
@@ -80,6 +114,9 @@ bool RpcCodec::recvResponse(int fd,
     }
 
     uint32_t header_size = ntohl(net_header_size);
+    if (header_size > kMaxRpcHeaderSize) {
+        return false;
+    }
 
     std::string header_str;
     if (!TcpSocket::recvAll(fd, header_str, header_size)) {
@@ -87,6 +124,10 @@ bool RpcCodec::recvResponse(int fd,
     }
 
     if (!header.ParseFromString(header_str)) {
+        return false;
+    }
+
+    if (header.response_size() > kMaxRpcBodySize) {
         return false;
     }
 
