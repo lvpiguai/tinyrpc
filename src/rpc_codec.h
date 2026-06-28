@@ -7,7 +7,7 @@
 
 namespace tinyrpc {
 
-enum RpcErrorCode {
+enum RpcResponseStatusCode {
     RPC_OK = 0,
     RPC_INVALID_REQUEST = 1,
     RPC_SERVICE_NOT_FOUND = 2,
@@ -17,24 +17,36 @@ enum RpcErrorCode {
     RPC_INTERNAL_ERROR = 6
 };
 
+enum class RpcCodecStatus {
+    OK = 0,
+    SOCKET_ERROR,
+    HEADER_TOO_LARGE,
+    BODY_TOO_LARGE,
+    HEADER_PARSE_FAILED,
+    BODY_SIZE_MISMATCH,
+    HEADER_SERIALIZE_FAILED
+};
+
+const char* rpcCodecStatusToString(RpcCodecStatus status);
+
 // 负责按 TinyRPC 协议收发 RPC 消息字节
 class RpcCodec {
 public:
-    static bool sendRequest(int fd,
-                            const RpcRequestHeader& header,
-                            const std::string& request_body);
+    static RpcCodecStatus sendRequest(int fd,
+                                      const RpcRequestHeader& header,
+                                      const std::string& request_body);
 
-    static bool recvRequest(int fd,
-                            RpcRequestHeader& header,
-                            std::string& request_body);
+    static RpcCodecStatus recvRequest(int fd,
+                                      RpcRequestHeader& header,
+                                      std::string& request_body);
 
-    static bool sendResponse(int fd,
-                             const RpcResponseHeader& header,
-                             const std::string& response_body);
+    static RpcCodecStatus sendResponse(int fd,
+                                       const RpcResponseHeader& header,
+                                       const std::string& response_body);
 
-    static bool recvResponse(int fd,
-                             RpcResponseHeader& header,
-                             std::string& response_body);
+    static RpcCodecStatus recvResponse(int fd,
+                                       RpcResponseHeader& header,
+                                       std::string& response_body);
 };
 
 } // namespace tinyrpc

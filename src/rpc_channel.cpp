@@ -73,8 +73,9 @@ void RpcChannel::CallMethod(const google::protobuf::MethodDescriptor* method,
     }
 
     // 发送 RPC 请求消息
-    if (!RpcCodec::sendRequest(fd, header, request_body)) {
-        std::string err = "send rpc request failed";
+    RpcCodecStatus status = RpcCodec::sendRequest(fd, header, request_body);
+    if (status != RpcCodecStatus::OK) {
+        std::string err = rpcCodecStatusToString(status);
         std::cerr << err << std::endl;
         if (controller) {
             controller->SetFailed(err);
@@ -86,8 +87,9 @@ void RpcChannel::CallMethod(const google::protobuf::MethodDescriptor* method,
     // 接收 RPC 响应字节
     RpcResponseHeader response_header;
     std::string response_body;
-    if (!RpcCodec::recvResponse(fd, response_header, response_body)) {
-        std::string err = "recv rpc response failed";
+    status = RpcCodec::recvResponse(fd, response_header, response_body);
+    if (status != RpcCodecStatus::OK) {
+        std::string err = rpcCodecStatusToString(status);
         std::cerr << err << std::endl;
         if (controller) {
             controller->SetFailed(err);
@@ -96,10 +98,10 @@ void RpcChannel::CallMethod(const google::protobuf::MethodDescriptor* method,
         return;
     }
 
-    if (response_header.error_code() != RPC_OK) {
-        std::string err = response_header.error_text();
+    if (response_header.status_code() != RPC_OK) {
+        std::string err = response_header.status_text();
         if (err.empty()) {
-            err = "rpc server error: " + std::to_string(response_header.error_code());
+            err = "rpc server error: " + std::to_string(response_header.status_code());
         }
         if (controller) {
             controller->SetFailed(err);

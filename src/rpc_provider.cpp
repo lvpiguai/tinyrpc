@@ -21,20 +21,20 @@ namespace {
 
 bool sendSuccessResponse(int client_fd, const std::string& response_body) {
     RpcResponseHeader header;
-    header.set_error_code(RPC_OK);
-    header.set_error_text("");
+    header.set_status_code(RPC_OK);
+    header.set_status_text("");
     header.set_response_size(static_cast<uint32_t>(response_body.size()));
 
-    return RpcCodec::sendResponse(client_fd, header, response_body);
+    return RpcCodec::sendResponse(client_fd, header, response_body) == RpcCodecStatus::OK;
 }
 
-bool sendErrorResponse(int client_fd, int32_t error_code, const std::string& error_text) {
+bool sendErrorResponse(int client_fd, int32_t status_code, const std::string& status_text) {
     RpcResponseHeader header;
-    header.set_error_code(error_code);
-    header.set_error_text(error_text);
+    header.set_status_code(status_code);
+    header.set_status_text(status_text);
     header.set_response_size(0);
 
-    return RpcCodec::sendResponse(client_fd, header, "");
+    return RpcCodec::sendResponse(client_fd, header, "") == RpcCodecStatus::OK;
 }
 
 } // namespace
@@ -164,8 +164,9 @@ void RpcProvider::handleClient(int client_fd) {
     RpcRequestHeader header;
     std::string request_body;
 
-    if (!RpcCodec::recvRequest(client_fd, header, request_body)) {
-        std::cerr << "recv rpc request failed" << std::endl;
+    RpcCodecStatus status = RpcCodec::recvRequest(client_fd, header, request_body);
+    if (status != RpcCodecStatus::OK) {
+        std::cerr << "recv rpc request failed: " << rpcCodecStatusToString(status) << std::endl;
         close(client_fd);
         return;
     }

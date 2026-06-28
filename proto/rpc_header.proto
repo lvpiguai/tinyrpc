@@ -11,7 +11,7 @@ message RpcRequestHeader {
 
 // RPC 响应头
 message RpcResponseHeader {
-  int32 error_code = 1;
-  string error_text = 2;
+  int32 status_code = 1;
+  string status_text = 2;
   uint32 response_size = 3;
 }

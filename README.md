@@ -102,7 +102,7 @@ RPC 调用：[客户端] Stub -> RpcChannel -> RpcCodec -> TcpSocket -> RpcProvi
 | --- | --- |
 | 业务消息 | 用户 `.proto` 定义的请求/响应对象，如 `AddRequest`、`AddResponse` |
 | RPC 请求头消息 | 框架定义的 `RpcRequestHeader`，记录 `service_name`、`method_name`、`request_size` |
-| RPC 响应头消息 | 框架定义的 `RpcResponseHeader`，记录 `error_code`、`error_text`、`response_size` |
+| RPC 响应头消息 | 框架定义的 `RpcResponseHeader`，记录 `status_code`、`status_text`、`response_size` |
 | RPC 请求报文 | `request_header_size(4字节) + request_header + request_body` |
 | RPC 响应报文 | `response_header_size(4字节) + response_header + response_body` |
 | 注册中心数据 | 服务注册/发现数据，包括 `service_name`、`ip`、`port` |
@@ -162,7 +162,7 @@ sequenceDiagram
     Socket-->>Channel: RPC 响应报文
     Channel->>Codec: 解码响应报文
     Codec-->>Channel: RpcResponseHeader + response_body
-    Channel->>Channel: 检查 error_code
+    Channel->>Channel: 检查 status_code
     Channel-->>Stub: 填充 response
     Stub-->>Client: 返回调用结果
 ```
