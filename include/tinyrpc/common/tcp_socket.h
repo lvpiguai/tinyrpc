@@ -1,0 +1,70 @@
+#pragma once
+
+#include <cstddef>
+#include <cstdint>
+#include <optional>
+#include <string>
+
+namespace tinyrpc {
+
+// 拥有一个 TCP 连接，析构时自动关闭
+class TcpSocket {
+public:
+    static constexpr int kDefaultTimeoutMs = 5000;
+
+    // 接管已有文件描述符的所有权
+    explicit TcpSocket(int fd) noexcept;
+
+    ~TcpSocket();
+
+    TcpSocket(const TcpSocket&) = delete;
+    TcpSocket& operator=(const TcpSocket&) = delete;
+
+    TcpSocket(TcpSocket&& other) noexcept;
+    TcpSocket& operator=(TcpSocket&& other) noexcept;
+
+    // 连接远程服务器
+    static std::optional<TcpSocket> connect(const std::string& ip, uint16_t port);
+
+    // 设置收发超时
+    bool setTimeout(int timeout_ms = kDefaultTimeoutMs);
+
+    // 发送全部数据
+    bool sendAll(const std::string& data);
+    bool sendAll(const char* data, size_t len);
+
+    // 接收指定长度的数据
+    bool recvAll(char* data, size_t len);
+    bool recvAll(std::string& out, size_t len);
+
+    // 接收一行文本
+    bool recvLine(std::string& line);
+
+private:
+    int fd_ = -1;
+};
+
+// 拥有一个 TCP 监听端口，析构时自动关闭
+class TcpListener {
+public:
+    ~TcpListener();
+
+    TcpListener(const TcpListener&) = delete;
+    TcpListener& operator=(const TcpListener&) = delete;
+
+    TcpListener(TcpListener&& other) noexcept;
+    TcpListener& operator=(TcpListener&& other) noexcept;
+
+    // 绑定地址并开始监听
+    static std::optional<TcpListener> bind(const std::string& ip, uint16_t port);
+
+    // 接收客户端连接并设置默认收发超时
+    std::optional<TcpSocket> accept() const;
+
+private:
+    explicit TcpListener(int fd) noexcept;
+
+    int fd_ = -1;
+};
+
+} // namespace tinyrpc
