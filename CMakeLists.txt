@@ -1,70 +1,89 @@
 cmake_minimum_required(VERSION 3.10)
 
-project(tinyrpc)
+project(tinyrpc LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-# 查找 Protobuf 和线程库
 find_package(Protobuf REQUIRED)
 find_package(Threads REQUIRED)
 
-# 添加头文件搜索路径
-include_directories(
-    ${CMAKE_CURRENT_SOURCE_DIR}/src
-    ${CMAKE_CURRENT_BINARY_DIR}
-)
-
-# 列出要编译的 proto 文件
-set(PROTO_FILES
-    ${CMAKE_CURRENT_SOURCE_DIR}/proto/calculator.proto
+set(RPC_PROTO_FILE
     ${CMAKE_CURRENT_SOURCE_DIR}/proto/rpc_header.proto
 )
 
-# 把 proto 生成 C++ 代码
-protobuf_generate_cpp(PROTO_SRCS PROTO_HDRS ${PROTO_FILES})
+set(CALCULATOR_PROTO_FILE
+    ${CMAKE_CURRENT_SOURCE_DIR}/examples/calculator/calculator.proto
+)
 
-# 打包 RPC 基础代码
-add_library(tinyrpc_lib
-    src/tcp_socket.cpp
-    src/rpc_channel.cpp
-    src/rpc_provider.cpp
-    src/rpc_controller.cpp
-    src/rpc_codec.cpp
-    src/registry_client.cpp
-    src/thread_pool.cpp
-    ${PROTO_SRCS}
-    ${PROTO_HDRS}
+protobuf_generate_cpp(RPC_PROTO_SRCS RPC_PROTO_HDRS ${RPC_PROTO_FILE})
+protobuf_generate_cpp(CALCULATOR_PROTO_SRCS CALCULATOR_PROTO_HDRS ${CALCULATOR_PROTO_FILE})
+
+add_library(tinyrpc_lib STATIC
+    src/common/tcp_socket.cpp
+    src/common/rpc_codec.cpp
+    src/common/rpc_controller.cpp
+    src/client/rpc_channel.cpp
+    src/server/rpc_provider.cpp
+    src/server/thread_pool.cpp
+    src/common/registry_client.cpp
+    ${RPC_PROTO_SRCS}
+    ${RPC_PROTO_HDRS}
+)
+
+target_include_directories(tinyrpc_lib
+    PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_BINARY_DIR}
 )
 
 target_link_libraries(tinyrpc_lib
-    protobuf::libprotobuf
-    Threads::Threads
+    PUBLIC
+        protobuf::libprotobuf
+        Threads::Threads
 )
 
-# 生成服务端程序
-add_executable(server
-    example/server.cpp
+add_library(calculator_proto STATIC
+    ${CALCULATOR_PROTO_SRCS}
+    ${CALCULATOR_PROTO_HDRS}
 )
 
-target_link_libraries(server
-    tinyrpc_lib
+target_include_directories(calculator_proto
+    PUBLIC
+        ${CMAKE_CURRENT_BINARY_DIR}
 )
 
-# 生成客户端程序
-add_executable(client
-    example/client.cpp
+target_link_libraries(calculator_proto
+    PUBLIC
+        protobuf::libprotobuf
 )
 
-target_link_libraries(client
-    tinyrpc_lib
+add_executable(calculator_server
+    examples/calculator/server.cpp
 )
 
-# 生成注册中心程序
-add_executable(registry
-    example/registry.cpp
+target_link_libraries(calculator_server
+    PRIVATE
+        tinyrpc_lib
+        calculator_proto
 )
 
-target_link_libraries(registry
-    tinyrpc_lib
+add_executable(calculator_client
+    examples/calculator/client.cpp
+)
+
+target_link_libraries(calculator_client
+    PRIVATE
+        tinyrpc_lib
+        calculator_proto
+)
+
+add_executable(tinyrpc_registry
+    registry/main.cpp
+)
+
+target_link_libraries(tinyrpc_registry
+    PRIVATE
+        tinyrpc_lib
 )
