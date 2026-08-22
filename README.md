@@ -18,24 +18,21 @@ TinyRPC 封装服务注册/发现、协议编解码、网络通信、序列化/�
 
 ```text
 tinyrpc/
-├── CMakeLists.txt              # 构建配置
-├── README.md                   # 项目说明
-├── proto/                      # 接口定义
-│   ├── calculator.proto         # 计算器服务
-│   └── rpc_header.proto         # RPC 请求头
-├── src/                        # 框架源码
-│   ├── rpc_channel.*            # 客户端调用通道
-│   ├── rpc_provider.*           # 服务端注册与分发
-│   ├── rpc_controller.*         # 调用错误状态
-│   ├── rpc_codec.*              # 协议编解码
-│   ├── registry_client.*        # 注册中心客户端
-│   └── tcp_socket.*             # TCP 通信封装
-├── example/                    # 示例代码
-│   ├── client.cpp               # 客户端
-│   ├── server.cpp               # 服务端
-│   └── registry.cpp             # 注册中心
-└── docs/                       # 文档资源
-    └── images/                  # 图片资源
+├── include/tinyrpc/             # 框架头文件
+│   ├── client/                  # 客户端接口
+│   ├── common/                  # 公共协议与网络接口
+│   └── server/                  # 服务端接口
+├── src/                         # 框架实现
+│   ├── client/
+│   ├── common/
+│   └── server/
+├── registry/main.cpp            # 注册中心进程入口
+├── examples/calculator/         # 框架使用示例
+│   ├── calculator.proto
+│   ├── client.cpp
+│   └── server.cpp
+├── proto/rpc_header.proto       # 框架 RPC 协议
+└── docs/images/                 # 文档资源
 ```
 
 ## 编译运行
@@ -43,37 +40,36 @@ tinyrpc/
 编译项目：
 
 ```bash
-mkdir build
-cd build
-cmake ..
-make
+cmake -S . -B build
+cmake --build build -j
 ```
 
 启动注册中心：
 
 ```bash
-./registry
+./build/tinyrpc_registry
 ```
 
 启动服务端：
 
 ```bash
-./server
+./build/calculator_server
 ```
 
 启动客户端：
 
 ```bash
-./client
+./build/calculator_client
 ```
 
 ## 示例说明
 
-示例程序位于 `example/` 目录：
+示例程序位于 `examples/calculator/` 目录：
 
-- `registry.cpp`：启动注册中心
 - `server.cpp`：实现并注册 `CalculatorService`
 - `client.cpp`：通过 Stub 调用远程 `Add` 和 `Sub`
+
+注册中心入口位于 `registry/main.cpp`。
 
 ## 类职责
 
@@ -84,7 +80,8 @@ make
 | `RpcChannel` | 客户端调用通道 |
 | `RpcProvider` | 服务端注册与请求分发 |
 | `RpcCodec` | RPC 请求/响应编解码 |
-| `TcpSocket` | TCP 通信封装 |
+| `TcpListener` | TCP 地址绑定与连接接收 |
+| `TcpSocket` | TCP 连接的 RAII 管理与数据收发 |
 | `RegistryClient` | 服务注册与发现 |
 | `RpcController` | 调用错误状态 |
 
