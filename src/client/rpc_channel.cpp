@@ -1,8 +1,9 @@
 #include <tinyrpc/client/rpc_channel.h>
 
-#include <tinyrpc/common/rpc_codec.h>
-#include <tinyrpc/common/tcp_socket.h>
+#include <tinyrpc/common/protocol_codec.h>
 #include <tinyrpc/common/registry_client.h>
+#include <tinyrpc/common/rpc_transport.h>
+#include <tinyrpc/common/tcp_socket.h>
 #include "rpc_header.pb.h"
 
 #include <cstdint>
@@ -66,24 +67,24 @@ void RpcChannel::CallMethod(const google::protobuf::MethodDescriptor* method,
         return;
     }
 
-    // 发送 RPC 请求消息
-    auto status = RpcCodec::sendRequest(*socket, header, request_body);
-    if (status != RpcCodecStatus::OK) {
-        std::string err = rpcCodecStatusToString(status);
+    RpcTransport transport(*socket);
+
+    // 发送 RPC 请求报文
+    auto status = transport.sendRequest(header, request_body);
+    if (!status.ok()) {
         if (controller) {
-            controller->SetFailed(err);
+            controller->SetFailed(status.message);
         }
         return;
     }
 
-    // 接收 RPC 响应字节
+    // 接收 RPC 响应报文
     RpcResponseHeader response_header;
     std::string response_body;
-    status = RpcCodec::recvResponse(*socket, response_header, response_body);
-    if (status != RpcCodecStatus::OK) {
-        std::string err = rpcCodecStatusToString(status);
+    status = transport.receiveResponse(response_header, response_body);
+    if (!status.ok()) {
         if (controller) {
-            controller->SetFailed(err);
+            controller->SetFailed(status.message);
         }
         return;
     }

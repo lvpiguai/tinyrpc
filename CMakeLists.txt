@@ -22,7 +22,8 @@ protobuf_generate_cpp(CALCULATOR_PROTO_SRCS CALCULATOR_PROTO_HDRS ${CALCULATOR_P
 
 add_library(tinyrpc_lib STATIC
     src/common/tcp_socket.cpp
-    src/common/rpc_codec.cpp
+    src/common/protocol_codec.cpp
+    src/common/rpc_transport.cpp
     src/common/rpc_controller.cpp
     src/client/rpc_channel.cpp
     src/server/rpc_provider.cpp

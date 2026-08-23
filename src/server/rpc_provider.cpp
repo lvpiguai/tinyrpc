@@ -1,8 +1,9 @@
 #include <tinyrpc/server/rpc_provider.h>
 
-#include <tinyrpc/common/rpc_codec.h>
-#include <tinyrpc/common/tcp_socket.h>
+#include <tinyrpc/common/protocol_codec.h>
 #include <tinyrpc/common/registry_client.h>
+#include <tinyrpc/common/rpc_transport.h>
+#include <tinyrpc/common/tcp_socket.h>
 #include <tinyrpc/server/thread_pool.h>
 #include "rpc_header.pb.h"
 
@@ -17,16 +18,16 @@ namespace tinyrpc {
 
 namespace {
 
-bool sendSuccessResponse(TcpSocket& client_socket, const std::string& response_body) {
+bool sendSuccessResponse(RpcTransport& transport, const std::string& response_body) {
     RpcResponseHeader header;
     header.set_status_code(RPC_OK);
     header.set_status_text("");
     header.set_response_size(static_cast<uint32_t>(response_body.size()));
 
-    return RpcCodec::sendResponse(client_socket, header, response_body) == RpcCodecStatus::OK;
+    return transport.sendResponse(header, response_body).ok();
 }
 
-bool sendErrorResponse(TcpSocket& client_socket,
+bool sendErrorResponse(RpcTransport& transport,
                        int32_t status_code,
                        const std::string& status_text) {
     RpcResponseHeader header;
@@ -34,7 +35,7 @@ bool sendErrorResponse(TcpSocket& client_socket,
     header.set_status_text(status_text);
     header.set_response_size(0);
 
-    return RpcCodec::sendResponse(client_socket, header, "") == RpcCodecStatus::OK;
+    return transport.sendResponse(header, "").ok();
 }
 
 } // namespace
@@ -46,11 +47,13 @@ public:
         : client_socket_(std::move(client_socket)), response_(response) {}
 
     void Run() override {
+        RpcTransport transport(client_socket_);
+
         // 序列化 protobuf 响应对象
         std::string response_body;
 
         if (!response_->SerializeToString(&response_body)) {
-            sendErrorResponse(client_socket_,
+            sendErrorResponse(transport,
                               RPC_SERIALIZE_RESPONSE_FAILED,
                               "serialize response failed");
             delete response_;
@@ -59,7 +62,7 @@ public:
         }
 
         // 回写 RPC 响应消息
-        sendSuccessResponse(client_socket_, response_body);
+        sendSuccessResponse(transport, response_body);
 
         delete response_;
         delete this;
@@ -142,12 +145,14 @@ void RpcProvider::run(const std::string& ip, uint16_t port) {
 }
 
 void RpcProvider::handleClient(TcpSocket client_socket) {
-    // 接收 RPC 请求头和请求体字节
+    RpcTransport transport(client_socket);
+
+    // 接收 RPC 请求报文
     RpcRequestHeader header;
     std::string request_body;
 
-    const auto status = RpcCodec::recvRequest(client_socket, header, request_body);
-    if (status != RpcCodecStatus::OK) {
+    const auto status = transport.receiveRequest(header, request_body);
+    if (!status.ok()) {
         return;
     }
 
@@ -158,7 +163,7 @@ void RpcProvider::handleClient(TcpSocket client_socket) {
     const auto service_it = services_.find(service_name);
     if (service_it == services_.end()) {
         const auto err = "service not found: " + service_name;
-        sendErrorResponse(client_socket, RPC_SERVICE_NOT_FOUND, err);
+        sendErrorResponse(transport, RPC_SERVICE_NOT_FOUND, err);
         return;
     }
 
@@ -167,7 +172,7 @@ void RpcProvider::handleClient(TcpSocket client_socket) {
         service->GetDescriptor()->FindMethodByName(method_name);
     if (method == nullptr) {
         const auto err = "method not found: " + method_name;
-        sendErrorResponse(client_socket, RPC_METHOD_NOT_FOUND, err);
+        sendErrorResponse(transport, RPC_METHOD_NOT_FOUND, err);
         return;
     }
 
@@ -178,7 +183,7 @@ void RpcProvider::handleClient(TcpSocket client_socket) {
     // 解析 protobuf 请求对象
     if (!request->ParseFromString(request_body)) {
         std::string err = "parse request body failed";
-        sendErrorResponse(client_socket, RPC_PARSE_REQUEST_FAILED, err);
+        sendErrorResponse(transport, RPC_PARSE_REQUEST_FAILED, err);
         delete request;
         delete response;
         return;
