@@ -79,7 +79,9 @@ cmake --build build -j
 | Service | Protobuf 生成的服务基类，业务类继承实现 |
 | `RpcChannel` | 客户端调用通道 |
 | `RpcProvider` | 服务端注册与请求分发 |
-| `RpcCodec` | RPC 请求/响应编解码 |
+| `ProtocolCodec` | RPC 协议头的编解码与长度校验 |
+| `RpcTransport` | 完整 RPC 请求/响应报文的收发 |
+| `RpcStatus` | RPC 操作的错误码与错误信息 |
 | `TcpListener` | TCP 地址绑定与连接接收 |
 | `TcpSocket` | TCP 连接的 RAII 管理与数据收发 |
 | `RegistryClient` | 服务注册与发现 |
@@ -90,7 +92,7 @@ cmake --build build -j
 ```text
 服务注册：[服务端] Service -> RpcProvider -> RegistryClient -> Registry [注册中心]
 服务发现：[客户端] Stub -> RpcChannel -> RegistryClient -> Registry [注册中心]
-RPC 调用：[客户端] Stub -> RpcChannel -> RpcCodec -> TcpSocket -> RpcProvider -> Service [服务端]
+RPC 调用：[客户端] Stub -> RpcChannel -> RpcTransport -> ProtocolCodec/TcpSocket -> RpcProvider -> Service [服务端]
 ```
 
 ## 数据类型
@@ -132,7 +134,8 @@ sequenceDiagram
     participant Channel as RpcChannel
     participant RegistryClient
     participant Registry
-    participant Codec as RpcCodec
+    participant Transport as RpcTransport
+    participant Codec as ProtocolCodec
     participant Socket as TcpSocket
     participant Provider as RpcProvider
     participant Service as Service
@@ -145,20 +148,29 @@ sequenceDiagram
     RegistryClient-->>Channel: 服务地址
 
     Channel->>Channel: 构造 RpcRequestHeader，序列化 request
-    Channel->>Codec: RpcRequestHeader + request_body
-    Codec->>Socket: RPC 请求报文
+    Channel->>Transport: RpcRequestHeader + request_body
+    Transport->>Codec: 编码 RpcRequestHeader
+    Codec-->>Transport: request_header 字节
+    Transport->>Socket: 发送完整 RPC 请求报文
     Socket->>Provider: RPC 请求报文
 
-    Provider->>Codec: 解码请求报文
-    Codec-->>Provider: RpcRequestHeader + request_body
+    Provider->>Transport: 接收 RPC 请求报文
+    Transport->>Socket: 读取报文字节
+    Transport->>Codec: 解码 request_header
+    Codec-->>Transport: RpcRequestHeader
+    Transport-->>Provider: RpcRequestHeader + request_body
     Provider->>Service: 调用业务方法
     Service-->>Provider: 业务响应
 
-    Provider->>Codec: RpcResponseHeader + response_body
-    Codec->>Socket: RPC 响应报文
+    Provider->>Transport: RpcResponseHeader + response_body
+    Transport->>Codec: 编码 RpcResponseHeader
+    Codec-->>Transport: response_header 字节
+    Transport->>Socket: 发送完整 RPC 响应报文
     Socket-->>Channel: RPC 响应报文
-    Channel->>Codec: 解码响应报文
-    Codec-->>Channel: RpcResponseHeader + response_body
+    Channel->>Transport: 接收 RPC 响应报文
+    Transport->>Codec: 解码 response_header
+    Codec-->>Transport: RpcResponseHeader
+    Transport-->>Channel: RpcResponseHeader + response_body
     Channel->>Channel: 检查 status_code
     Channel-->>Stub: 填充 response
     Stub-->>Client: 返回调用结果
