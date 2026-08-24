@@ -6,12 +6,10 @@ package tinyrpc;
 message RpcRequestHeader {
   string service_name = 1;
   string method_name = 2;
-  uint32 request_size = 3;
 }
 
 // RPC 响应头
 message RpcResponseHeader {
   int32 status_code = 1;
   string status_text = 2;
-  uint32 response_size = 3;
 }

@@ -1,5 +1,6 @@
 #include "calculator.pb.h"
-#include <tinyrpc/server/rpc_provider.h>
+#include <tinyrpc/common/endpoint.h>
+#include <tinyrpc/server/rpc_server.h>
 
 #include <iostream>
 
@@ -22,10 +23,6 @@ public:
 
         std::cout << "call Add: " << a << " + " << b << " = " << result << std::endl;
 
-        // 通知框架回包
-        if (done) {
-            done->Run();
-        }
     }
     // Sub 业务实现
     void Sub(google::protobuf::RpcController* controller,
@@ -40,24 +37,21 @@ public:
 
         std::cout << "call Sub: " << a << " - " << b << " = " << result << std::endl;
 
-        if (done) {
-            done->Run();
-        }
     }
 };
 
 int main() {
-    // 创建、配置 RpcProvider
-    tinyrpc::RpcProvider provider;
-    provider.setRegistry("127.0.0.1", 9000);//注册中心地址
-    provider.setThreadPool(4, 1024);
+    // 创建并配置 RPC 服务端
+    tinyrpc::RpcServer server(tinyrpc::Endpoint{"127.0.0.1", 8000});
+    server.setRegistry(tinyrpc::Endpoint{"127.0.0.1", 9000});
+    server.setThreadPool(4, 1024);
 
     // 创建、注册、启动服务
     CalculatorServiceImpl calculator_service;
-    provider.registerService(calculator_service);
+    server.registerService(calculator_service);
 
     std::cout << "calculator server start at 127.0.0.1:8000" << std::endl;
-    provider.run("127.0.0.1", 8000);//服务端地址
+    server.run();
 
     return 0;
 }

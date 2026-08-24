@@ -221,12 +221,12 @@ std::optional<TcpSocket> TcpListener::accept() const {
         return std::nullopt;
     }
 
-    TcpSocket socket(client_fd);
-    if (!socket.setTimeout()) {
+    TcpSocket client_socket(client_fd);
+    if (!client_socket.setTimeout()) {
         return std::nullopt;
     }
 
-    return socket;
+    return client_socket;
 }
 
 } // namespace tinyrpc

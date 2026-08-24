@@ -1,8 +1,9 @@
 #pragma once
 
+#include <tinyrpc/common/endpoint.h>
+
 #include <google/protobuf/service.h>
 
-#include <cstdint>
 #include <string>
 
 namespace tinyrpc {
@@ -10,11 +11,14 @@ namespace tinyrpc {
 // 客户端 RPC 通道
 class RpcChannel : public google::protobuf::RpcChannel {
 public:
-    RpcChannel();
+    // 目标服务寻址方式
+    enum class Mode {
+        Direct,
+        Registry
+    };
 
-    RpcChannel(const std::string& ip, uint16_t port);
-
-    void setRegistry(const std::string& ip, uint16_t port);
+    // 配置寻址方式和网络端点
+    RpcChannel(Mode mode, Endpoint endpoint);
 
     void CallMethod(const google::protobuf::MethodDescriptor* method,
                     google::protobuf::RpcController* controller,
@@ -23,11 +27,11 @@ public:
                     google::protobuf::Closure* done) override;
 
 private:
-    std::string ip_;
-    uint16_t port_;
-    bool use_registry_ = false;
-    std::string registry_ip_;
-    uint16_t registry_port_ = 0;
+    bool resolveEndpoint(const std::string& service_name,
+                         Endpoint& target_endpoint) const;
+
+    Mode mode_;
+    Endpoint endpoint_;
 };
 
 } // namespace tinyrpc

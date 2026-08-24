@@ -1,13 +1,15 @@
 #include "calculator.pb.h"
 #include <tinyrpc/client/rpc_channel.h>
+#include <tinyrpc/common/endpoint.h>
 #include <tinyrpc/common/rpc_controller.h>
 
 #include <iostream>
 
 int main() {
     // 创建 RPC 通道
-    tinyrpc::RpcChannel channel;
-    channel.setRegistry("127.0.0.1", 9000);
+    tinyrpc::RpcChannel channel(
+        tinyrpc::RpcChannel::Mode::Registry,
+        tinyrpc::Endpoint{"127.0.0.1", 9000});
 
     // 创建客户端 stub
     tinyrpc::CalculatorService_Stub stub(&channel);

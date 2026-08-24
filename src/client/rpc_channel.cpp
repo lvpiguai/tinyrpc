@@ -2,110 +2,124 @@
 
 #include <tinyrpc/common/protocol_codec.h>
 #include <tinyrpc/common/registry_client.h>
-#include <tinyrpc/common/rpc_transport.h>
 #include <tinyrpc/common/tcp_socket.h>
-#include "rpc_header.pb.h"
+#include <tinyrpc/common/tcp_frame_transport.h>
+
+#include <google/protobuf/descriptor.h>
+#include <google/protobuf/message.h>
 
 #include <cstdint>
 #include <string>
+#include <utility>
 
 namespace tinyrpc {
 
-RpcChannel::RpcChannel()
-    : port_(0) {}
+RpcChannel::RpcChannel(Mode mode, Endpoint endpoint)
+    : mode_(mode), endpoint_(std::move(endpoint)) {}
 
-RpcChannel::RpcChannel(const std::string& ip, uint16_t port)
-    : ip_(ip), port_(port) {}
+// 获取直连地址或从注册中心发现服务
+bool RpcChannel::resolveEndpoint(const std::string& service_name,
+                                 Endpoint& target_endpoint) const {
+    // 使用直连服务端地址
+    if (mode_ == Mode::Direct) {
+        target_endpoint = endpoint_;
+        return true;
+    }
 
-void RpcChannel::setRegistry(const std::string& ip, uint16_t port) {
-    use_registry_ = true;
-    registry_ip_ = ip;
-    registry_port_ = port;
+    // 从注册中心发现服务地址
+    RegistryClient registry(endpoint_);
+    return registry.discoverService(service_name, target_endpoint);
 }
 
+// 执行一次同步 RPC 调用
 void RpcChannel::CallMethod(const google::protobuf::MethodDescriptor* method,
                             google::protobuf::RpcController* controller,
                             const google::protobuf::Message* request,
                             google::protobuf::Message* response,
                             google::protobuf::Closure* done) {
-    // 序列化 protobuf 请求对象为请求体字节
+    // 统一记录错误并通知调用方
+    auto fail = [&](const std::string& message) {
+        if (controller) {
+            controller->SetFailed(message);
+        }
+        if (done) {
+            done->Run();
+        }
+    };
+
+    // 序列化请求体
     std::string request_body;
     if (!request->SerializeToString(&request_body)) {
-        std::string err = "serialize request failed";
-        if (controller) {
-            controller->SetFailed(err);
-        }
+        fail("serialize request failed");
         return;
     }
 
-    // 构造 RPC 请求头
-    RpcRequestHeader header;
-    header.set_service_name(method->service()->full_name());
-    header.set_method_name(method->name());
-    header.set_request_size(static_cast<uint32_t>(request_body.size()));
+    // 构造 RPC 请求对象
+    RpcRequest rpc_request{
+        method->service()->full_name(),
+        method->name(),
+        std::move(request_body)
+    };
 
-    auto target_ip = ip_;
-    auto target_port = port_;
-    if (use_registry_) {
-        RegistryClient registry(registry_ip_, registry_port_);
-        if (!registry.discoverService(header.service_name(), target_ip, target_port)) {
-            std::string err = "discover service failed";
-            if (controller) {
-                controller->SetFailed(err);
-            }
-            return;
-        }
+    // 编码 RPC 请求帧
+    std::string frame;
+    auto status = protocol_codec::encode(rpc_request, frame);
+    if (!status.ok()) {
+        fail(status.message);
+        return;
+    }
+
+    // 获取目标服务地址
+    Endpoint target_endpoint;
+    if (!resolveEndpoint(rpc_request.service_name, target_endpoint)) {
+        fail("discover service failed");
+        return;
     }
 
     // 连接服务端
-    auto socket = TcpSocket::connect(target_ip, target_port);
+    auto socket = TcpSocket::connect(target_endpoint.ip, target_endpoint.port);
     if (!socket) {
-        std::string err = "connect server failed";
-        if (controller) {
-            controller->SetFailed(err);
-        }
+        fail("connect server failed");
         return;
     }
 
-    RpcTransport transport(*socket);
+    TcpFrameTransport transport(*socket);
 
-    // 发送 RPC 请求报文
-    auto status = transport.sendRequest(header, request_body);
+    // 发送 RPC 请求帧
+    status = transport.sendFrame(frame);
     if (!status.ok()) {
-        if (controller) {
-            controller->SetFailed(status.message);
-        }
+        fail(status.message);
         return;
     }
 
-    // 接收 RPC 响应报文
-    RpcResponseHeader response_header;
-    std::string response_body;
-    status = transport.receiveResponse(response_header, response_body);
+    // 接收 RPC 响应帧
+    status = transport.receiveFrame(frame);
     if (!status.ok()) {
-        if (controller) {
-            controller->SetFailed(status.message);
-        }
+        fail(status.message);
         return;
     }
 
-    if (response_header.status_code() != RPC_OK) {
-        auto err = response_header.status_text();
+    // 解码 RPC 响应帧
+    RpcResponse rpc_response;
+    status = protocol_codec::decode(frame, rpc_response);
+    if (!status.ok()) {
+        fail(status.message);
+        return;
+    }
+
+    // 检查服务端处理结果
+    if (rpc_response.status_code != RPC_OK) {
+        auto err = rpc_response.status_text;
         if (err.empty()) {
-            err = "rpc server error: " + std::to_string(response_header.status_code());
+            err = "rpc server error: " + std::to_string(rpc_response.status_code);
         }
-        if (controller) {
-            controller->SetFailed(err);
-        }
+        fail(err);
         return;
     }
 
     // 解析 protobuf 响应对象
-    if (!response->ParseFromString(response_body)) {
-        std::string err = "parse response failed";
-        if (controller) {
-            controller->SetFailed(err);
-        }
+    if (!response->ParseFromString(rpc_response.body)) {
+        fail("parse response failed");
         return;
     }
 

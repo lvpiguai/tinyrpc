@@ -7,10 +7,10 @@ namespace tinyrpc {
 enum class RpcErrorCode {
     OK = 0,
     NETWORK_ERROR,
+    FRAME_TOO_LARGE,
     HEADER_TOO_LARGE,
     BODY_TOO_LARGE,
     HEADER_PARSE_FAILED,
-    BODY_SIZE_MISMATCH,
     HEADER_SERIALIZE_FAILED
 };
 

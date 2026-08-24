@@ -78,9 +78,9 @@ cmake --build build -j
 | Stub | Protobuf 生成的客户端代理 |
 | Service | Protobuf 生成的服务基类，业务类继承实现 |
 | `RpcChannel` | 客户端调用通道 |
-| `RpcProvider` | 服务端注册与请求分发 |
-| `ProtocolCodec` | RPC 协议头的编解码与长度校验 |
-| `RpcTransport` | 完整 RPC 请求/响应报文的收发 |
+| `RpcServer` | RPC 服务端，负责服务注册与请求处理 |
+| `protocol_codec` 命名空间 | RPC 逻辑消息与帧数据的编码、解码和校验 |
+| `TcpFrameTransport` | 通过 TCP 收发 `[frame_size][frame]` |
 | `RpcStatus` | RPC 操作的错误码与错误信息 |
 | `TcpListener` | TCP 地址绑定与连接接收 |
 | `TcpSocket` | TCP 连接的 RAII 管理与数据收发 |
@@ -90,20 +90,22 @@ cmake --build build -j
 ## 类关系
 
 ```text
-服务注册：[服务端] Service -> RpcProvider -> RegistryClient -> Registry [注册中心]
+服务注册：[服务端] Service -> RpcServer -> RegistryClient -> Registry [注册中心]
 服务发现：[客户端] Stub -> RpcChannel -> RegistryClient -> Registry [注册中心]
-RPC 调用：[客户端] Stub -> RpcChannel -> RpcTransport -> ProtocolCodec/TcpSocket -> RpcProvider -> Service [服务端]
+RPC 调用：[客户端] Stub -> RpcChannel -> protocol_codec/TcpFrameTransport -> TcpSocket -> RpcServer -> Service [服务端]
 ```
 
 ## 数据类型
 
 | 类型 | 说明 |
 | --- | --- |
+| 网络端点 | `Endpoint`，保存 IP 地址和端口 |
 | 业务消息 | 用户 `.proto` 定义的请求/响应对象，如 `AddRequest`、`AddResponse` |
-| RPC 请求头消息 | 框架定义的 `RpcRequestHeader`，记录 `service_name`、`method_name`、`request_size` |
-| RPC 响应头消息 | 框架定义的 `RpcResponseHeader`，记录 `status_code`、`status_text`、`response_size` |
-| RPC 请求报文 | `request_header_size(4字节) + request_header + request_body` |
-| RPC 响应报文 | `response_header_size(4字节) + response_header + response_body` |
+| RPC 逻辑消息 | 编码前、解码后的 `RpcRequest`、`RpcResponse` |
+| RPC 请求头消息 | 框架定义的 `RpcRequestHeader`，记录 `service_name`、`method_name` |
+| RPC 响应头消息 | 框架定义的 `RpcResponseHeader`，记录 `status_code`、`status_text` |
+| RPC 帧 | `header_size(4字节) + protobuf header + body` |
+| TCP 传输报文 | `frame_size(4字节) + RPC帧` |
 | 注册中心数据 | 服务注册/发现数据，包括 `service_name`、`ip`、`port` |
 
 ## 时序图
@@ -112,17 +114,17 @@ RPC 调用：[客户端] Stub -> RpcChannel -> RpcTransport -> ProtocolCodec/Tcp
 
 ```mermaid
 sequenceDiagram
-    participant Server as 服务端
-    participant Provider as RpcProvider
+    participant App as 服务端
+    participant Server as RpcServer
     participant RegistryClient
     participant Registry
 
-    Server->>Provider: registerService(service)
-    Server->>Provider: run(ip, port)
-    Provider->>RegistryClient: registerService(service_name, ip, port)
+    App->>Server: registerService(service)
+    App->>Server: run()
+    Server->>RegistryClient: registerService(service_name, ip, port)
     RegistryClient->>Registry: REGISTER service_name ip port
     Registry-->>RegistryClient: OK
-    RegistryClient-->>Provider: 注册结果
+    RegistryClient-->>Server: 注册结果
 ```
 
 ### RPC 调用
@@ -134,10 +136,10 @@ sequenceDiagram
     participant Channel as RpcChannel
     participant RegistryClient
     participant Registry
-    participant Transport as RpcTransport
-    participant Codec as ProtocolCodec
+    participant Transport as TcpFrameTransport
+    participant Codec as protocol_codec
     participant Socket as TcpSocket
-    participant Provider as RpcProvider
+    participant Server as RpcServer
     participant Service as Service
 
     Client->>Stub: 调用方法，传入业务请求
@@ -147,30 +149,30 @@ sequenceDiagram
     Registry-->>RegistryClient: ip, port
     RegistryClient-->>Channel: 服务地址
 
-    Channel->>Channel: 构造 RpcRequestHeader，序列化 request
-    Channel->>Transport: RpcRequestHeader + request_body
-    Transport->>Codec: 编码 RpcRequestHeader
-    Codec-->>Transport: request_header 字节
-    Transport->>Socket: 发送完整 RPC 请求报文
-    Socket->>Provider: RPC 请求报文
+    Channel->>Channel: 序列化 request，构造 RpcRequest
+    Channel->>Codec: 编码 RpcRequest
+    Codec-->>Channel: [header_size][header][body]
+    Channel->>Transport: sendFrame(frame)
+    Transport->>Socket: 发送 [frame_size][frame]
+    Socket->>Server: RPC 请求报文
 
-    Provider->>Transport: 接收 RPC 请求报文
-    Transport->>Socket: 读取报文字节
-    Transport->>Codec: 解码 request_header
-    Codec-->>Transport: RpcRequestHeader
-    Transport-->>Provider: RpcRequestHeader + request_body
-    Provider->>Service: 调用业务方法
-    Service-->>Provider: 业务响应
+    Server->>Transport: receiveFrame()
+    Transport->>Socket: 按 frame_size 读取完整帧
+    Transport-->>Server: [header_size][header][body]
+    Server->>Codec: 解码完整请求帧
+    Codec-->>Server: RpcRequest
+    Server->>Service: 调用业务方法
+    Service-->>Server: 业务响应
 
-    Provider->>Transport: RpcResponseHeader + response_body
-    Transport->>Codec: 编码 RpcResponseHeader
-    Codec-->>Transport: response_header 字节
-    Transport->>Socket: 发送完整 RPC 响应报文
+    Server->>Codec: 编码 RpcResponse
+    Codec-->>Server: [header_size][header][body]
+    Server->>Transport: sendFrame(frame)
+    Transport->>Socket: 发送 [frame_size][frame]
     Socket-->>Channel: RPC 响应报文
-    Channel->>Transport: 接收 RPC 响应报文
-    Transport->>Codec: 解码 response_header
-    Codec-->>Transport: RpcResponseHeader
-    Transport-->>Channel: RpcResponseHeader + response_body
+    Channel->>Transport: receiveFrame()
+    Transport-->>Channel: [header_size][header][body]
+    Channel->>Codec: 解码完整响应帧
+    Codec-->>Channel: RpcResponse
     Channel->>Channel: 检查 status_code
     Channel-->>Stub: 填充 response
     Stub-->>Client: 返回调用结果

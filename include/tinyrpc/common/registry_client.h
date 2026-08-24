@@ -1,25 +1,23 @@
 #pragma once
 
-#include <cstdint>
+#include <tinyrpc/common/endpoint.h>
+
 #include <string>
 
 namespace tinyrpc {
 
 class RegistryClient {
 public:
-    RegistryClient(const std::string& ip, uint16_t port);
+    explicit RegistryClient(Endpoint registry_endpoint);
 
     bool registerService(const std::string& service_name,
-                         const std::string& ip,
-                         uint16_t port);
+                         const Endpoint& service_endpoint);
 
     bool discoverService(const std::string& service_name,
-                         std::string& ip,
-                         uint16_t& port);
+                         Endpoint& service_endpoint);
 
 private:
-    std::string registry_ip_;
-    uint16_t registry_port_;
+    Endpoint registry_endpoint_;
 };
 
 } // namespace tinyrpc
