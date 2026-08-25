@@ -51,6 +51,14 @@ struct ClientConnection {
     std::optional<std::size_t> frame_size;    // 长度字段解析后的帧大小
     std::string output;                       // 等待发送的传输层数据
     std::size_t sent_size = 0;                // 已发送字节数
+
+    // 响应完成后清理状态，以接收同一连接的下一个请求
+    void reset() {
+        input.clear();
+        frame_size.reset();
+        output.clear();
+        sent_size = 0;
+    }
 };
 
 // 工作线程完成业务处理后交给 Reactor 的结果
@@ -437,10 +445,24 @@ void RpcServer::run() {
                     break;
                 }
 
-                // 当前仍是一连接一请求，响应发送完成后关闭连接
-                if (send_failed || client.sent_size == client.output.size()) {
+                if (send_failed) {
                     epoll_ctl(epoll_fd, EPOLL_CTL_DEL, ready_fd, nullptr);
                     clients.erase(client_it);
+                    continue;
+                }
+
+                if (client.sent_size == client.output.size()) {
+                    // 响应完成后保留连接，重新等待下一个请求
+                    client.reset();
+                    epoll_event read_event{};
+                    read_event.events = EPOLLIN | EPOLLRDHUP;
+                    read_event.data.fd = ready_fd;
+                    if (epoll_ctl(epoll_fd,
+                                  EPOLL_CTL_MOD,
+                                  ready_fd,
+                                  &read_event) < 0) {
+                        clients.erase(client_it);
+                    }
                 }
             }
         }

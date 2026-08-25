@@ -117,7 +117,7 @@ bool TcpSocket::sendAll(const char* data, size_t len) {
     size_t sent = 0;
 
     while (sent < len) {
-        const auto n = send(fd_, data + sent, len - sent, 0);
+        const auto n = sendSome(data + sent, len - sent);
         if (n <= 0) {
             return false;
         }

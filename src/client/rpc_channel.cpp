@@ -30,6 +30,36 @@ std::optional<Endpoint> RpcChannel::findServiceEndpoint(
     return registry.discoverServiceEndpoint(service_name);
 }
 
+// 获取可复用连接，注册中心模式下不同服务不共用连接
+TcpSocket* RpcChannel::getConnection(const std::string& service_name) {
+    if (socket_ &&
+        (mode_ == Mode::Direct || connected_service_name_ == service_name)) {
+        return &*socket_;
+    }
+
+    closeConnection();
+
+    const auto target_endpoint = findServiceEndpoint(service_name);
+    if (!target_endpoint) {
+        return nullptr;
+    }
+
+    auto socket = TcpSocket::connect(target_endpoint->ip,
+                                     target_endpoint->port);
+    if (!socket) {
+        return nullptr;
+    }
+
+    socket_ = std::move(*socket);
+    connected_service_name_ = service_name;
+    return &*socket_;
+}
+
+void RpcChannel::closeConnection() {
+    socket_.reset();
+    connected_service_name_.clear();
+}
+
 // 执行一次同步 RPC 调用
 void RpcChannel::CallMethod(const google::protobuf::MethodDescriptor* method,
                             google::protobuf::RpcController* controller,
@@ -68,18 +98,10 @@ void RpcChannel::CallMethod(const google::protobuf::MethodDescriptor* method,
         return;
     }
 
-    // 获取目标服务地址
-    const auto target_endpoint = findServiceEndpoint(rpc_request.service_name);
-    if (!target_endpoint) {
-        fail("discover service failed");
-        return;
-    }
-
-    // 连接服务端
-    auto socket = TcpSocket::connect(target_endpoint->ip,
-                                     target_endpoint->port);
+    // 获取已有长连接，首次调用时建立连接
+    auto* socket = getConnection(rpc_request.service_name);
     if (!socket) {
-        fail("connect server failed");
+        fail("connect or discover service failed");
         return;
     }
 
@@ -88,6 +110,7 @@ void RpcChannel::CallMethod(const google::protobuf::MethodDescriptor* method,
     // 发送 RPC 请求帧
     status = transport.sendFrame(frame);
     if (!status.ok()) {
+        closeConnection();
         fail(status.message);
         return;
     }
@@ -95,6 +118,7 @@ void RpcChannel::CallMethod(const google::protobuf::MethodDescriptor* method,
     // 接收 RPC 响应帧
     status = transport.receiveFrame(frame);
     if (!status.ok()) {
+        closeConnection();
         fail(status.message);
         return;
     }
@@ -103,6 +127,7 @@ void RpcChannel::CallMethod(const google::protobuf::MethodDescriptor* method,
     RpcResponse rpc_response;
     status = protocol_codec::decode(frame, rpc_response);
     if (!status.ok()) {
+        closeConnection();
         fail(status.message);
         return;
     }

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <tinyrpc/common/endpoint.h>
+#include <tinyrpc/common/tcp_socket.h>
 
 #include <google/protobuf/service.h>
 
@@ -31,8 +32,18 @@ private:
     std::optional<Endpoint> findServiceEndpoint(
         const std::string& service_name) const;
 
+    // 获取当前长连接，不存在时连接目标服务
+    TcpSocket* getConnection(const std::string& service_name);
+
+    // 关闭失效连接并清理关联服务名
+    void closeConnection();
+
     Mode mode_;
     Endpoint endpoint_;
+
+    // 同一个 RpcChannel 的串行调用复用该连接
+    std::optional<TcpSocket> socket_;
+    std::string connected_service_name_;
 };
 
 } // namespace tinyrpc
