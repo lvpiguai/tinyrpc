@@ -63,6 +63,12 @@ cmake --build build -j
 ./build/calculator_client
 ```
 
+运行测试：
+
+```bash
+ctest --test-dir build --output-on-failure
+```
+
 ## 示例说明
 
 示例程序位于 `examples/calculator/` 目录：

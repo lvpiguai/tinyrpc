@@ -2,6 +2,8 @@ cmake_minimum_required(VERSION 3.10)
 
 project(tinyrpc LANGUAGES CXX)
 
+include(CTest)
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
@@ -90,3 +92,16 @@ target_link_libraries(tinyrpc_registry
     PRIVATE
         tinyrpc_lib
 )
+
+if(BUILD_TESTING)
+    add_executable(protocol_codec_test
+        tests/protocol_codec_test.cpp
+    )
+
+    target_link_libraries(protocol_codec_test
+        PRIVATE
+            tinyrpc_lib
+    )
+
+    add_test(NAME protocol_codec_test COMMAND protocol_codec_test)
+endif()
