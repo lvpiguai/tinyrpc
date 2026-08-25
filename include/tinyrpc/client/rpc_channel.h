@@ -40,16 +40,18 @@ public:
 private:
     struct PooledConnection {
         PooledConnection(TcpSocket socket_value,
-                         std::string service_name_value);
+                         std::string service_name_value,
+                         Endpoint endpoint_value);
 
         TcpSocket socket;
         std::string service_name;
+        Endpoint endpoint;
         bool in_use = true;
     };
 
     using ConnectionPtr = std::shared_ptr<PooledConnection>;
 
-    std::optional<Endpoint> findServiceEndpoint(
+    std::vector<Endpoint> findServiceEndpoints(
         const std::string& service_name);
 
     // 获取一条空闲连接，连接池未满时创建新连接

@@ -2,8 +2,11 @@
 
 #include <tinyrpc/common/endpoint.h>
 
+#include <chrono>
+#include <condition_variable>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -16,22 +19,35 @@ class RegistryServer {
 public:
     // 配置注册中心监听地址
     explicit RegistryServer(Endpoint listen_endpoint);
+    ~RegistryServer();
 
     // 启动注册中心
     void run();
 
 private:
+    struct ServiceInstance {
+        Endpoint endpoint;
+        std::chrono::steady_clock::time_point last_heartbeat;
+    };
+
     // 处理单个注册中心连接
     void handleClient(TcpSocket client_socket);
+
+    // 定期删除超过心跳期限的实例
+    void cleanupLoop();
 
     // 注册中心监听地址
     Endpoint listen_endpoint_;
 
     // 保存每个服务注册的全部实例
-    std::unordered_map<std::string, std::vector<Endpoint>> service_endpoints_;
+    std::unordered_map<std::string, std::vector<ServiceInstance>>
+        service_endpoints_;
 
-    // 保护服务端点映射
+    // 保护服务端点映射和清理线程停止标记
     std::mutex mutex_;
+    std::condition_variable cleanup_cv_;
+    bool cleanup_stopped_ = false;
+    std::thread cleanup_thread_;
 };
 
 } // namespace tinyrpc

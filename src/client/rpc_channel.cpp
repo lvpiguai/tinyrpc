@@ -21,9 +21,11 @@ RpcChannel::RpcChannel(Mode mode, Endpoint endpoint)
 
 RpcChannel::PooledConnection::PooledConnection(
     TcpSocket socket_value,
-    std::string service_name_value)
+    std::string service_name_value,
+    Endpoint endpoint_value)
     : socket(std::move(socket_value)),
-      service_name(std::move(service_name_value)) {}
+      service_name(std::move(service_name_value)),
+      endpoint(std::move(endpoint_value)) {}
 
 void RpcChannel::setMaxConnections(size_t max_connections) {
     {
@@ -33,27 +35,37 @@ void RpcChannel::setMaxConnections(size_t max_connections) {
     pool_cv_.notify_all();
 }
 
-// 查找直连或注册中心服务端点
-std::optional<Endpoint> RpcChannel::findServiceEndpoint(
+// 返回本次建连的候选端点，注册模式从轮询位置开始排列
+std::vector<Endpoint> RpcChannel::findServiceEndpoints(
     const std::string& service_name) {
     // 使用直连服务端地址
     if (mode_ == Mode::Direct) {
-        return endpoint_;
+        return {endpoint_};
     }
 
     // 获取全部服务实例，由客户端选择本次连接的目标
     RegistryClient registry(endpoint_);
     const auto endpoints = registry.discoverServiceEndpoints(service_name);
     if (endpoints.empty()) {
-        return std::nullopt;
+        return {};
     }
 
-    // 每个服务独立维护轮询下标
-    std::lock_guard<std::mutex> lock(pool_mutex_);
-    auto& next_index = next_endpoint_indices_[service_name];
-    const auto endpoint = endpoints[next_index % endpoints.size()];
-    next_index = (next_index + 1) % endpoints.size();
-    return endpoint;
+    // 每个服务独立维护轮询起点，并保留其余实例作为建连备选
+    size_t start_index = 0;
+    {
+        std::lock_guard<std::mutex> lock(pool_mutex_);
+        auto& next_index = next_endpoint_indices_[service_name];
+        start_index = next_index % endpoints.size();
+        next_index = (next_index + 1) % endpoints.size();
+    }
+
+    std::vector<Endpoint> ordered_endpoints;
+    ordered_endpoints.reserve(endpoints.size());
+    for (size_t i = 0; i < endpoints.size(); ++i) {
+        ordered_endpoints.push_back(
+            endpoints[(start_index + i) % endpoints.size()]);
+    }
+    return ordered_endpoints;
 }
 
 // 获取空闲连接；达到上限时等待其他调用归还连接
@@ -98,24 +110,30 @@ RpcChannel::ConnectionPtr RpcChannel::acquireConnection(
         ++connecting_count_;
         lock.unlock();
 
-        const auto target_endpoint = findServiceEndpoint(service_name);
+        const auto target_endpoints = findServiceEndpoints(service_name);
         std::optional<TcpSocket> socket;
-        if (target_endpoint) {
-            socket = TcpSocket::connect(target_endpoint->ip,
-                                        target_endpoint->port);
+        std::optional<Endpoint> connected_endpoint;
+        // 只在发送请求前尝试其他实例，不重放已经发送的 RPC
+        for (const auto& target_endpoint : target_endpoints) {
+            socket = TcpSocket::connect(target_endpoint.ip,
+                                        target_endpoint.port);
+            if (socket) {
+                connected_endpoint = target_endpoint;
+                break;
+            }
         }
 
         lock.lock();
         --connecting_count_;
 
-        if (!socket) {
+        if (!socket || !connected_endpoint) {
             lock.unlock();
             pool_cv_.notify_all();
             return nullptr;
         }
 
         auto connection = std::make_shared<PooledConnection>(
-            std::move(*socket), service_name);
+            std::move(*socket), service_name, std::move(*connected_endpoint));
         connections_.push_back(connection);
         lock.unlock();
         pool_cv_.notify_all();
@@ -134,8 +152,21 @@ void RpcChannel::releaseConnection(const ConnectionPtr& connection,
             return;
         }
 
-        // 网络异常或池容量被调小时，直接销毁这条连接
-        if (!healthy || connections_.size() > max_connections_) {
+        // 网络异常时，同时清除同一实例的其他空闲旧连接
+        if (!healthy) {
+            const auto failed_endpoint = connection->endpoint;
+            connections_.erase(
+                std::remove_if(
+                    connections_.begin(), connections_.end(),
+                    [&](const ConnectionPtr& candidate) {
+                        const auto same_endpoint =
+                            candidate->endpoint.ip == failed_endpoint.ip &&
+                            candidate->endpoint.port == failed_endpoint.port;
+                        return candidate == connection ||
+                               (!candidate->in_use && same_endpoint);
+                    }),
+                connections_.end());
+        } else if (connections_.size() > max_connections_) {
             connections_.erase(item);
         } else {
             connection->in_use = false;

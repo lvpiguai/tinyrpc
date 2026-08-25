@@ -16,6 +16,8 @@
 
 #include <array>
 #include <cerrno>
+#include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <cstring>
 #include <iostream>
@@ -40,6 +42,9 @@ constexpr std::size_t kFrameSizeFieldSize = sizeof(uint32_t);
 
 // Reactor 每次从单个连接读取的临时缓冲区大小
 constexpr std::size_t kReadBufferSize = 8192;
+
+// 心跳间隔小于注册中心的超时时间，避免正常实例被摘除
+constexpr auto kHeartbeatInterval = std::chrono::seconds(2);
 
 // 保存尚未形成完整请求帧的连接及其读取状态
 struct ClientConnection {
@@ -162,6 +167,10 @@ std::string buildTransportData(const std::string& frame) {
 RpcServer::RpcServer(Endpoint listen_endpoint)
     : listen_endpoint_(std::move(listen_endpoint)) {}
 
+RpcServer::~RpcServer() {
+    stopHeartbeat();
+}
+
 // 注册本地业务服务
 void RpcServer::registerService(google::protobuf::Service& service) {
     // 获取 service 描述
@@ -180,6 +189,49 @@ void RpcServer::setRegistry(Endpoint registry_endpoint) {
 void RpcServer::setThreadPool(size_t worker_count, size_t max_queue_size) {
     worker_count_ = worker_count;
     max_queue_size_ = max_queue_size;
+}
+
+// 周期性向注册中心续约当前服务端提供的全部服务
+void RpcServer::startHeartbeat() {
+    if (!registry_endpoint_) {
+        return;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(heartbeat_mutex_);
+        heartbeat_stopped_ = false;
+    }
+
+    heartbeat_thread_ = std::thread([this]() {
+        RegistryClient registry(*registry_endpoint_);
+        std::unique_lock<std::mutex> lock(heartbeat_mutex_);
+        while (!heartbeat_cv_.wait_for(
+            lock, kHeartbeatInterval,
+            [this]() { return heartbeat_stopped_; })) {
+            // 网络操作可能阻塞，执行时不持有心跳状态锁
+            lock.unlock();
+            for (const auto& item : services_) {
+                if (!registry.heartbeatServiceEndpoint(item.first,
+                                                       listen_endpoint_)) {
+                    std::cerr << "heartbeat service failed: " << item.first
+                              << std::endl;
+                }
+            }
+            lock.lock();
+        }
+    });
+}
+
+// 通知心跳线程退出并等待其结束
+void RpcServer::stopHeartbeat() {
+    {
+        std::lock_guard<std::mutex> lock(heartbeat_mutex_);
+        heartbeat_stopped_ = true;
+    }
+    heartbeat_cv_.notify_all();
+    if (heartbeat_thread_.joinable()) {
+        heartbeat_thread_.join();
+    }
 }
 
 // 启动 RPC 服务端
@@ -265,6 +317,9 @@ void RpcServer::run() {
         std::make_unique<ThreadPool>(worker_count, max_queue_size_);
     std::array<epoll_event, kMaxEpollEvents> events{};
 
+    // 网络初始化完成后开始周期性续约服务实例
+    startHeartbeat();
+
     // 等待监听 socket 或客户端 socket 就绪
     while (true) {
         const auto event_count = epoll_wait(epoll_fd,
@@ -277,6 +332,7 @@ void RpcServer::run() {
             }
             std::cerr << "epoll_wait failed: " << std::strerror(errno)
                       << std::endl;
+            stopHeartbeat();
             thread_pool.reset();
             close(completion_fd);
             close(epoll_fd);

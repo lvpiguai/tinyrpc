@@ -44,6 +44,27 @@ bool RegistryClient::registerServiceEndpoint(
     return response && *response == "OK";
 }
 
+// 向注册中心发送服务心跳
+bool RegistryClient::heartbeatServiceEndpoint(
+    const std::string& service_name,
+    const Endpoint& service_endpoint) {
+    auto socket = TcpSocket::connect(registry_endpoint_.ip,
+                                     registry_endpoint_.port);
+    if (!socket) {
+        return false;
+    }
+
+    std::ostringstream request;
+    request << "HEARTBEAT " << service_name << " "
+            << service_endpoint.ip << " " << service_endpoint.port << "\n";
+    if (!socket->sendAll(request.str())) {
+        return false;
+    }
+
+    const auto response = socket->recvLine(kMaxRegistryLineSize);
+    return response && *response == "OK";
+}
+
 // 从注册中心发现服务的全部实例
 std::vector<Endpoint> RegistryClient::discoverServiceEndpoints(
     const std::string& service_name) {

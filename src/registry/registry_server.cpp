@@ -5,6 +5,7 @@
 #include <tinyrpc/common/thread_pool.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <iostream>
@@ -24,11 +25,26 @@ constexpr std::size_t kMaxRegistryLineSize = 1024;
 constexpr std::size_t kRegistryWorkerCount = 4;
 constexpr std::size_t kRegistryMaxQueueSize = 1024;
 
+// 注册中心每秒检查一次，连续 6 秒没有心跳就摘除实例
+constexpr auto kCleanupInterval = std::chrono::seconds(1);
+constexpr auto kHeartbeatTimeout = std::chrono::seconds(6);
+
 } // namespace
 
 // 配置注册中心监听地址
 RegistryServer::RegistryServer(Endpoint listen_endpoint)
     : listen_endpoint_(std::move(listen_endpoint)) {}
+
+RegistryServer::~RegistryServer() {
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        cleanup_stopped_ = true;
+    }
+    cleanup_cv_.notify_all();
+    if (cleanup_thread_.joinable()) {
+        cleanup_thread_.join();
+    }
+}
 
 // 处理单个注册中心连接
 void RegistryServer::handleClient(TcpSocket client_socket) {
@@ -44,26 +60,32 @@ void RegistryServer::handleClient(TcpSocket client_socket) {
     iss >> command;
 
     std::string response = "ERROR\n";
-    if (command == "REGISTER") {
-        // 注册服务端点
+    if (command == "REGISTER" || command == "HEARTBEAT") {
+        // 注册和心跳都采用 upsert：实例不存在时新增，存在时更新时间
         std::string service_name;
         std::string ip;
         uint16_t port = 0;
 
         if (iss >> service_name >> ip >> port) {
             std::lock_guard<std::mutex> lock(mutex_);
-            auto& endpoints = service_endpoints_[service_name];
-            const auto duplicate = std::find_if(
-                endpoints.begin(), endpoints.end(),
-                [&](const Endpoint& endpoint) {
-                    return endpoint.ip == ip && endpoint.port == port;
+            auto& instances = service_endpoints_[service_name];
+            const auto instance = std::find_if(
+                instances.begin(), instances.end(),
+                [&](const ServiceInstance& value) {
+                    return value.endpoint.ip == ip &&
+                           value.endpoint.port == port;
                 });
-            if (duplicate == endpoints.end()) {
-                endpoints.push_back(Endpoint{ip, port});
+            const auto now = std::chrono::steady_clock::now();
+            if (instance == instances.end()) {
+                instances.push_back({Endpoint{ip, port}, now});
+            } else {
+                instance->last_heartbeat = now;
             }
             response = "OK\n";
-            std::cout << "register service: " << service_name << " "
-                      << ip << ":" << port << std::endl;
+            if (command == "REGISTER") {
+                std::cout << "register service: " << service_name << " "
+                          << ip << ":" << port << std::endl;
+            }
         }
     } else if (command == "DISCOVER") {
         // 发现服务端点
@@ -77,8 +99,9 @@ void RegistryServer::handleClient(TcpSocket client_socket) {
                 // 返回：FOUND <数量> <ip1> <port1> ...
                 std::ostringstream oss;
                 oss << "FOUND " << it->second.size();
-                for (const auto& endpoint : it->second) {
-                    oss << " " << endpoint.ip << " " << endpoint.port;
+                for (const auto& instance : it->second) {
+                    oss << " " << instance.endpoint.ip << " "
+                        << instance.endpoint.port;
                 }
                 oss << "\n";
                 response = oss.str();
@@ -88,6 +111,40 @@ void RegistryServer::handleClient(TcpSocket client_socket) {
 
     // 回写处理结果
     client_socket.sendAll(response);
+}
+
+// 后台清理长时间没有续约的服务实例
+void RegistryServer::cleanupLoop() {
+    std::unique_lock<std::mutex> lock(mutex_);
+    while (!cleanup_stopped_) {
+        cleanup_cv_.wait_for(lock, kCleanupInterval, [this]() {
+            return cleanup_stopped_;
+        });
+        if (cleanup_stopped_) {
+            return;
+        }
+
+        const auto now = std::chrono::steady_clock::now();
+        for (auto service = service_endpoints_.begin();
+             service != service_endpoints_.end();) {
+            auto& instances = service->second;
+            instances.erase(
+                std::remove_if(
+                    instances.begin(), instances.end(),
+                    [&](const ServiceInstance& instance) {
+                        return now - instance.last_heartbeat >
+                               kHeartbeatTimeout;
+                    }),
+                instances.end());
+
+            // 服务没有存活实例时一并删除服务名
+            if (instances.empty()) {
+                service = service_endpoints_.erase(service);
+            } else {
+                ++service;
+            }
+        }
+    }
 }
 
 // 启动注册中心
@@ -105,6 +162,9 @@ void RegistryServer::run() {
 
     // 创建连接处理线程池
     ThreadPool thread_pool(kRegistryWorkerCount, kRegistryMaxQueueSize);
+
+    // 独立线程定期摘除失去心跳的实例
+    cleanup_thread_ = std::thread(&RegistryServer::cleanupLoop, this);
 
     // 循环接收客户端连接
     while (true) {
