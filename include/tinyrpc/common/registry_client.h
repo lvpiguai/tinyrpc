@@ -2,8 +2,8 @@
 
 #include <tinyrpc/common/endpoint.h>
 
-#include <optional>
 #include <string>
+#include <vector>
 
 namespace tinyrpc {
 
@@ -17,8 +17,8 @@ public:
     bool registerServiceEndpoint(const std::string& service_name,
                                  const Endpoint& service_endpoint);
 
-    // 发现服务端点
-    std::optional<Endpoint> discoverServiceEndpoint(
+    // 发现服务的全部实例
+    std::vector<Endpoint> discoverServiceEndpoints(
         const std::string& service_name);
 
 private:

@@ -4,6 +4,7 @@
 #include <tinyrpc/common/tcp_socket.h>
 #include <tinyrpc/common/thread_pool.h>
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <iostream>
@@ -51,7 +52,15 @@ void RegistryServer::handleClient(TcpSocket client_socket) {
 
         if (iss >> service_name >> ip >> port) {
             std::lock_guard<std::mutex> lock(mutex_);
-            service_endpoints_[service_name] = Endpoint{ip, port};
+            auto& endpoints = service_endpoints_[service_name];
+            const auto duplicate = std::find_if(
+                endpoints.begin(), endpoints.end(),
+                [&](const Endpoint& endpoint) {
+                    return endpoint.ip == ip && endpoint.port == port;
+                });
+            if (duplicate == endpoints.end()) {
+                endpoints.push_back(Endpoint{ip, port});
+            }
             response = "OK\n";
             std::cout << "register service: " << service_name << " "
                       << ip << ":" << port << std::endl;
@@ -65,8 +74,14 @@ void RegistryServer::handleClient(TcpSocket client_socket) {
             if (it == service_endpoints_.end()) {
                 response = "NOT_FOUND\n";
             } else {
-                response = "FOUND " + it->second.ip + " " +
-                           std::to_string(it->second.port) + "\n";
+                // 返回：FOUND <数量> <ip1> <port1> ...
+                std::ostringstream oss;
+                oss << "FOUND " << it->second.size();
+                for (const auto& endpoint : it->second) {
+                    oss << " " << endpoint.ip << " " << endpoint.port;
+                }
+                oss << "\n";
+                response = oss.str();
             }
         }
     }

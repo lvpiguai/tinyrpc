@@ -5,6 +5,7 @@
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 namespace tinyrpc {
 
@@ -26,8 +27,8 @@ private:
     // 注册中心监听地址
     Endpoint listen_endpoint_;
 
-    // 保存服务名到服务端点的映射
-    std::unordered_map<std::string, Endpoint> service_endpoints_;
+    // 保存每个服务注册的全部实例
+    std::unordered_map<std::string, std::vector<Endpoint>> service_endpoints_;
 
     // 保护服务端点映射
     std::mutex mutex_;

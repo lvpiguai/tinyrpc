@@ -152,7 +152,7 @@ sequenceDiagram
 
     Client->>Stub: 调用方法，传入业务请求
     Stub->>Channel: CallMethod(request, response)
-    Channel->>RegistryClient: discoverServiceEndpoint(service_name)
+    Channel->>RegistryClient: discoverServiceEndpoints(service_name)
     RegistryClient->>Registry: DISCOVER service_name
     Registry-->>RegistryClient: ip, port
     RegistryClient-->>Channel: 服务地址

@@ -35,15 +35,25 @@ void RpcChannel::setMaxConnections(size_t max_connections) {
 
 // 查找直连或注册中心服务端点
 std::optional<Endpoint> RpcChannel::findServiceEndpoint(
-    const std::string& service_name) const {
+    const std::string& service_name) {
     // 使用直连服务端地址
     if (mode_ == Mode::Direct) {
         return endpoint_;
     }
 
-    // 从注册中心发现服务地址
+    // 获取全部服务实例，由客户端选择本次连接的目标
     RegistryClient registry(endpoint_);
-    return registry.discoverServiceEndpoint(service_name);
+    const auto endpoints = registry.discoverServiceEndpoints(service_name);
+    if (endpoints.empty()) {
+        return std::nullopt;
+    }
+
+    // 每个服务独立维护轮询下标
+    std::lock_guard<std::mutex> lock(pool_mutex_);
+    auto& next_index = next_endpoint_indices_[service_name];
+    const auto endpoint = endpoints[next_index % endpoints.size()];
+    next_index = (next_index + 1) % endpoints.size();
+    return endpoint;
 }
 
 // 获取空闲连接；达到上限时等待其他调用归还连接

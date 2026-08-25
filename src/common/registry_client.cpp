@@ -6,12 +6,13 @@
 #include <sstream>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace tinyrpc {
 
 namespace {
 
-constexpr std::size_t kMaxRegistryLineSize = 1024;
+constexpr std::size_t kMaxRegistryLineSize = 64 * 1024;
 
 } // namespace
 
@@ -43,38 +44,48 @@ bool RegistryClient::registerServiceEndpoint(
     return response && *response == "OK";
 }
 
-// 从注册中心发现服务端点
-std::optional<Endpoint> RegistryClient::discoverServiceEndpoint(
+// 从注册中心发现服务的全部实例
+std::vector<Endpoint> RegistryClient::discoverServiceEndpoints(
     const std::string& service_name) {
     // 连接注册中心
     auto socket = TcpSocket::connect(registry_endpoint_.ip,
                                      registry_endpoint_.port);
     if (!socket) {
-        return std::nullopt;
+        return {};
     }
 
     // 发送服务发现请求
     const auto request = "DISCOVER " + service_name + "\n";
     if (!socket->sendAll(request)) {
-        return std::nullopt;
+        return {};
     }
 
     const auto response = socket->recvLine(kMaxRegistryLineSize);
     if (!response) {
-        return std::nullopt;
+        return {};
     }
 
-    // 解析服务端点
+    // 解析：FOUND <数量> <ip1> <port1> ...
     std::istringstream iss(*response);
     std::string status;
-    std::string discovered_ip;
-    uint16_t discovered_port = 0;
-    if (!(iss >> status >> discovered_ip >> discovered_port) ||
-        status != "FOUND") {
-        return std::nullopt;
+    std::size_t endpoint_count = 0;
+    if (!(iss >> status >> endpoint_count) || status != "FOUND") {
+        return {};
     }
 
-    return Endpoint{std::move(discovered_ip), discovered_port};
+    std::vector<Endpoint> endpoints;
+    endpoints.reserve(endpoint_count);
+    for (std::size_t i = 0; i < endpoint_count; ++i) {
+        std::string ip;
+        unsigned int port = 0;
+        if (!(iss >> ip >> port) || port > UINT16_MAX) {
+            return {};
+        }
+        endpoints.push_back(
+            Endpoint{std::move(ip), static_cast<uint16_t>(port)});
+    }
+
+    return endpoints;
 }
 
 } // namespace tinyrpc

@@ -11,6 +11,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace tinyrpc {
@@ -49,7 +50,7 @@ private:
     using ConnectionPtr = std::shared_ptr<PooledConnection>;
 
     std::optional<Endpoint> findServiceEndpoint(
-        const std::string& service_name) const;
+        const std::string& service_name);
 
     // 获取一条空闲连接，连接池未满时创建新连接
     ConnectionPtr acquireConnection(const std::string& service_name);
@@ -64,6 +65,7 @@ private:
     std::vector<ConnectionPtr> connections_;
     size_t max_connections_ = 4;
     size_t connecting_count_ = 0;
+    std::unordered_map<std::string, size_t> next_endpoint_indices_;
     std::mutex pool_mutex_;
     std::condition_variable pool_cv_;
 };
