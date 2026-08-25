@@ -10,6 +10,6 @@ message RpcRequestHeader {
 
 // RPC 响应头
 message RpcResponseHeader {
-  int32 status_code = 1;
-  string status_text = 2;
+  bool success = 1;
+  string error_message = 2;
 }

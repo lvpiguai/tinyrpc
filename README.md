@@ -21,12 +21,13 @@ tinyrpc/
 ├── include/tinyrpc/             # 框架头文件
 │   ├── client/                  # 客户端接口
 │   ├── common/                  # 公共协议与网络接口
+│   ├── registry/                # 注册中心接口
 │   └── server/                  # 服务端接口
 ├── src/                         # 框架实现
 │   ├── client/
 │   ├── common/
+│   ├── registry/
 │   └── server/
-├── registry/main.cpp            # 注册中心进程入口
 ├── examples/calculator/         # 框架使用示例
 │   ├── calculator.proto
 │   ├── client.cpp
@@ -69,7 +70,7 @@ cmake --build build -j
 - `server.cpp`：实现并注册 `CalculatorService`
 - `client.cpp`：通过 Stub 调用远程 `Add` 和 `Sub`
 
-注册中心入口位于 `registry/main.cpp`。
+注册中心入口位于 `src/registry/main.cpp`。
 
 ## 类职责
 
@@ -85,6 +86,7 @@ cmake --build build -j
 | `TcpListener` | TCP 地址绑定与连接接收 |
 | `TcpSocket` | TCP 连接的 RAII 管理与数据收发 |
 | `RegistryClient` | 服务注册与发现 |
+| `RegistryServer` | 保存服务端点并处理注册与发现请求 |
 | `RpcController` | 调用错误状态 |
 
 ## 类关系
@@ -103,7 +105,7 @@ RPC 调用：[客户端] Stub -> RpcChannel -> protocol_codec/TcpFrameTransport 
 | 业务消息 | 用户 `.proto` 定义的请求/响应对象，如 `AddRequest`、`AddResponse` |
 | RPC 逻辑消息 | 编码前、解码后的 `RpcRequest`、`RpcResponse` |
 | RPC 请求头消息 | 框架定义的 `RpcRequestHeader`，记录 `service_name`、`method_name` |
-| RPC 响应头消息 | 框架定义的 `RpcResponseHeader`，记录 `status_code`、`status_text` |
+| RPC 响应头消息 | 框架定义的 `RpcResponseHeader`，记录 `success`、`error_message` |
 | RPC 帧 | `header_size(4字节) + protobuf header + body` |
 | TCP 传输报文 | `frame_size(4字节) + RPC帧` |
 | 注册中心数据 | 服务注册/发现数据，包括 `service_name`、`ip`、`port` |
@@ -121,7 +123,7 @@ sequenceDiagram
 
     App->>Server: registerService(service)
     App->>Server: run()
-    Server->>RegistryClient: registerService(service_name, ip, port)
+    Server->>RegistryClient: registerServiceEndpoint(service_name, endpoint)
     RegistryClient->>Registry: REGISTER service_name ip port
     Registry-->>RegistryClient: OK
     RegistryClient-->>Server: 注册结果
@@ -144,7 +146,7 @@ sequenceDiagram
 
     Client->>Stub: 调用方法，传入业务请求
     Stub->>Channel: CallMethod(request, response)
-    Channel->>RegistryClient: discoverService(service_name)
+    Channel->>RegistryClient: discoverServiceEndpoint(service_name)
     RegistryClient->>Registry: DISCOVER service_name
     Registry-->>RegistryClient: ip, port
     RegistryClient-->>Channel: 服务地址
@@ -173,7 +175,7 @@ sequenceDiagram
     Transport-->>Channel: [header_size][header][body]
     Channel->>Codec: 解码完整响应帧
     Codec-->>Channel: RpcResponse
-    Channel->>Channel: 检查 status_code
+    Channel->>Channel: 检查 success
     Channel-->>Stub: 填充 response
     Stub-->>Client: 返回调用结果
 ```

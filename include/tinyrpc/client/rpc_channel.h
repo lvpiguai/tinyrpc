@@ -4,6 +4,7 @@
 
 #include <google/protobuf/service.h>
 
+#include <optional>
 #include <string>
 
 namespace tinyrpc {
@@ -27,8 +28,8 @@ public:
                     google::protobuf::Closure* done) override;
 
 private:
-    bool resolveEndpoint(const std::string& service_name,
-                         Endpoint& target_endpoint) const;
+    std::optional<Endpoint> findServiceEndpoint(
+        const std::string& service_name) const;
 
     Mode mode_;
     Endpoint endpoint_;

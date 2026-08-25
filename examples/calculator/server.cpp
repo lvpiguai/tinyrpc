@@ -7,10 +7,10 @@
 class CalculatorServiceImpl : public tinyrpc::CalculatorService {
 public:
     // Add 业务实现
-    void Add(google::protobuf::RpcController* controller,
+    void Add(google::protobuf::RpcController*,
              const tinyrpc::AddRequest* request,
              tinyrpc::AddResponse* response,
-             google::protobuf::Closure* done) override {
+             google::protobuf::Closure*) override {
         // 取出参数
         const auto a = request->a();
         const auto b = request->b();
@@ -25,10 +25,10 @@ public:
 
     }
     // Sub 业务实现
-    void Sub(google::protobuf::RpcController* controller,
+    void Sub(google::protobuf::RpcController*,
              const tinyrpc::SubRequest* request,
              tinyrpc::SubResponse* response,
-             google::protobuf::Closure* done) override {
+             google::protobuf::Closure*) override {
         const auto a = request->a();
         const auto b = request->b();
 

@@ -2,14 +2,14 @@
 
 #include <tinyrpc/common/protocol_codec.h>
 #include <tinyrpc/common/registry_client.h>
+#include <tinyrpc/common/tcp_listener.h>
 #include <tinyrpc/common/tcp_socket.h>
 #include <tinyrpc/common/tcp_frame_transport.h>
-#include <tinyrpc/server/thread_pool.h>
+#include <tinyrpc/common/thread_pool.h>
 
 #include <google/protobuf/descriptor.h>
 #include <google/protobuf/message.h>
 
-#include <cstdint>
 #include <iostream>
 #include <memory>
 #include <string>
@@ -31,26 +31,18 @@ bool sendRpcResponse(TcpFrameTransport& transport, const RpcResponse& response) 
 bool sendSuccessResponse(TcpFrameTransport& transport,
                          const std::string& response_body) {
     RpcResponse response;
-    response.status_code = RPC_OK;
     response.body = response_body;
     return sendRpcResponse(transport, response);
 }
 
 // 发送错误响应
 bool sendErrorResponse(TcpFrameTransport& transport,
-                       int32_t status_code,
-                       const std::string& status_text) {
+                       const std::string& error_message) {
     RpcResponse response;
-    response.status_code = status_code;
-    response.status_text = status_text;
+    response.success = false;
+    response.error_message = error_message;
     return sendRpcResponse(transport, response);
 }
-
-// 同步调用中使用的空回调
-class NoopClosure : public google::protobuf::Closure {
-public:
-    void Run() override {}
-};
 
 } // namespace
 
@@ -105,7 +97,8 @@ void RpcServer::run() {
     if (registry_endpoint_) {
         RegistryClient registry(*registry_endpoint_);
         for (const auto& item : services_) {
-            if (!registry.registerService(item.first, listen_endpoint_)) {
+            if (!registry.registerServiceEndpoint(item.first,
+                                                  listen_endpoint_)) {
                 std::cerr << "register service to registry failed: " << item.first << std::endl;
             }
         }
@@ -158,7 +151,7 @@ void RpcServer::handleClient(TcpSocket client_socket) {
     const auto service_it = services_.find(service_name);
     if (service_it == services_.end()) {
         const auto err = "service not found: " + service_name;
-        sendErrorResponse(transport, RPC_SERVICE_NOT_FOUND, err);
+        sendErrorResponse(transport, err);
         return;
     }
 
@@ -168,7 +161,7 @@ void RpcServer::handleClient(TcpSocket client_socket) {
         service->GetDescriptor()->FindMethodByName(method_name);
     if (method == nullptr) {
         const auto err = "method not found: " + method_name;
-        sendErrorResponse(transport, RPC_METHOD_NOT_FOUND, err);
+        sendErrorResponse(transport, err);
         return;
     }
 
@@ -181,24 +174,21 @@ void RpcServer::handleClient(TcpSocket client_socket) {
     // 解析 protobuf 请求对象
     if (!request->ParseFromString(rpc_request.body)) {
         std::string err = "parse request body failed";
-        sendErrorResponse(transport, RPC_PARSE_REQUEST_FAILED, err);
+        sendErrorResponse(transport, err);
         return;
     }
 
     // 同步调用业务方法
-    NoopClosure done;
     service->CallMethod(method,
                         nullptr,
                         request.get(),
                         response.get(),
-                        &done);
+                        nullptr);
 
     // 序列化 protobuf 响应对象
     std::string response_body;
     if (!response->SerializeToString(&response_body)) {
-        sendErrorResponse(transport,
-                          RPC_SERIALIZE_RESPONSE_FAILED,
-                          "serialize response failed");
+        sendErrorResponse(transport, "serialize response failed");
         return;
     }
 

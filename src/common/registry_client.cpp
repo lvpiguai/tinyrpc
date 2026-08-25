@@ -2,63 +2,79 @@
 
 #include <tinyrpc/common/tcp_socket.h>
 
+#include <cstddef>
 #include <sstream>
 #include <string>
 #include <utility>
 
 namespace tinyrpc {
 
+namespace {
+
+constexpr std::size_t kMaxRegistryLineSize = 1024;
+
+} // namespace
+
+// 配置注册中心地址
 RegistryClient::RegistryClient(Endpoint registry_endpoint)
     : registry_endpoint_(std::move(registry_endpoint)) {}
 
-bool RegistryClient::registerService(const std::string& service_name,
-                                     const Endpoint& service_endpoint) {
+// 向注册中心注册服务端点
+bool RegistryClient::registerServiceEndpoint(
+    const std::string& service_name,
+    const Endpoint& service_endpoint) {
+    // 连接注册中心
     auto socket = TcpSocket::connect(registry_endpoint_.ip,
                                      registry_endpoint_.port);
     if (!socket) {
         return false;
     }
 
+    // 构造并发送注册请求
     std::ostringstream request;
     request << "REGISTER " << service_name << " "
             << service_endpoint.ip << " " << service_endpoint.port << "\n";
 
-    std::string response;
-    const auto ok = socket->sendAll(request.str()) &&
-                    socket->recvLine(response) &&
-                    response == "OK";
+    if (!socket->sendAll(request.str())) {
+        return false;
+    }
 
-    return ok;
+    const auto response = socket->recvLine(kMaxRegistryLineSize);
+    return response && *response == "OK";
 }
 
-bool RegistryClient::discoverService(const std::string& service_name,
-                                     Endpoint& service_endpoint) {
+// 从注册中心发现服务端点
+std::optional<Endpoint> RegistryClient::discoverServiceEndpoint(
+    const std::string& service_name) {
+    // 连接注册中心
     auto socket = TcpSocket::connect(registry_endpoint_.ip,
                                      registry_endpoint_.port);
     if (!socket) {
-        return false;
+        return std::nullopt;
     }
 
+    // 发送服务发现请求
     const auto request = "DISCOVER " + service_name + "\n";
-    std::string response;
-    const auto ok = socket->sendAll(request) &&
-                    socket->recvLine(response);
-
-    if (!ok) {
-        return false;
+    if (!socket->sendAll(request)) {
+        return std::nullopt;
     }
 
-    std::istringstream iss(response);
+    const auto response = socket->recvLine(kMaxRegistryLineSize);
+    if (!response) {
+        return std::nullopt;
+    }
+
+    // 解析服务端点
+    std::istringstream iss(*response);
     std::string status;
     std::string discovered_ip;
     uint16_t discovered_port = 0;
     if (!(iss >> status >> discovered_ip >> discovered_port) ||
         status != "FOUND") {
-        return false;
+        return std::nullopt;
     }
 
-    service_endpoint = Endpoint{std::move(discovered_ip), discovered_port};
-    return true;
+    return Endpoint{std::move(discovered_ip), discovered_port};
 }
 
 } // namespace tinyrpc

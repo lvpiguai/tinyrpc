@@ -37,33 +37,10 @@ public:
     bool recvAll(char* data, size_t len);
     bool recvAll(std::string& out, size_t len);
 
-    // 接收一行文本
-    bool recvLine(std::string& line);
+    // 接收不超过指定长度的一行文本
+    std::optional<std::string> recvLine(size_t max_size);
 
 private:
-    int fd_ = -1;
-};
-
-// 拥有一个 TCP 监听端口，析构时自动关闭
-class TcpListener {
-public:
-    ~TcpListener();
-
-    TcpListener(const TcpListener&) = delete;
-    TcpListener& operator=(const TcpListener&) = delete;
-
-    TcpListener(TcpListener&& other) noexcept;
-    TcpListener& operator=(TcpListener&& other) noexcept;
-
-    // 绑定地址并开始监听
-    static std::optional<TcpListener> bind(const std::string& ip, uint16_t port);
-
-    // 接收客户端连接并设置默认收发超时
-    std::optional<TcpSocket> accept() const;
-
-private:
-    explicit TcpListener(int fd) noexcept;
-
     int fd_ = -1;
 };
 

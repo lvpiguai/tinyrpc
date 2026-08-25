@@ -17,18 +17,17 @@ namespace tinyrpc {
 RpcChannel::RpcChannel(Mode mode, Endpoint endpoint)
     : mode_(mode), endpoint_(std::move(endpoint)) {}
 
-// 获取直连地址或从注册中心发现服务
-bool RpcChannel::resolveEndpoint(const std::string& service_name,
-                                 Endpoint& target_endpoint) const {
+// 查找直连或注册中心服务端点
+std::optional<Endpoint> RpcChannel::findServiceEndpoint(
+    const std::string& service_name) const {
     // 使用直连服务端地址
     if (mode_ == Mode::Direct) {
-        target_endpoint = endpoint_;
-        return true;
+        return endpoint_;
     }
 
     // 从注册中心发现服务地址
     RegistryClient registry(endpoint_);
-    return registry.discoverService(service_name, target_endpoint);
+    return registry.discoverServiceEndpoint(service_name);
 }
 
 // 执行一次同步 RPC 调用
@@ -70,14 +69,15 @@ void RpcChannel::CallMethod(const google::protobuf::MethodDescriptor* method,
     }
 
     // 获取目标服务地址
-    Endpoint target_endpoint;
-    if (!resolveEndpoint(rpc_request.service_name, target_endpoint)) {
+    const auto target_endpoint = findServiceEndpoint(rpc_request.service_name);
+    if (!target_endpoint) {
         fail("discover service failed");
         return;
     }
 
     // 连接服务端
-    auto socket = TcpSocket::connect(target_endpoint.ip, target_endpoint.port);
+    auto socket = TcpSocket::connect(target_endpoint->ip,
+                                     target_endpoint->port);
     if (!socket) {
         fail("connect server failed");
         return;
@@ -108,10 +108,10 @@ void RpcChannel::CallMethod(const google::protobuf::MethodDescriptor* method,
     }
 
     // 检查服务端处理结果
-    if (rpc_response.status_code != RPC_OK) {
-        auto err = rpc_response.status_text;
+    if (!rpc_response.success) {
+        auto err = rpc_response.error_message;
         if (err.empty()) {
-            err = "rpc server error: " + std::to_string(rpc_response.status_code);
+            err = "rpc server error";
         }
         fail(err);
         return;

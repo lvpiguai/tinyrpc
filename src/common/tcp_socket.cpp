@@ -129,104 +129,31 @@ bool TcpSocket::recvAll(std::string& out, size_t len) {
     return recvAll(out.data(), len);
 }
 
-bool TcpSocket::recvLine(std::string& line) {
+std::optional<std::string> TcpSocket::recvLine(size_t max_size) {
     if (fd_ < 0) {
-        return false;
+        return std::nullopt;
     }
 
-    line.clear();
+    std::string line;
 
     char ch = '\0';
     while (true) {
         const auto n = recv(fd_, &ch, 1, 0);
         if (n <= 0) {
-            return false;
+            return std::nullopt;
         }
 
         if (ch == '\n') {
-            return true;
+            return line;
         }
 
         if (ch != '\r') {
+            if (line.size() >= max_size) {
+                return std::nullopt;
+            }
             line.push_back(ch);
         }
     }
-}
-
-TcpListener::TcpListener(int fd) noexcept
-    : fd_(fd) {}
-
-TcpListener::~TcpListener() {
-    if (fd_ >= 0) {
-        close(fd_);
-    }
-}
-
-TcpListener::TcpListener(TcpListener&& other) noexcept
-    : fd_(std::exchange(other.fd_, -1)) {}
-
-TcpListener& TcpListener::operator=(TcpListener&& other) noexcept {
-    if (this != &other) {
-        if (fd_ >= 0) {
-            close(fd_);
-        }
-        fd_ = std::exchange(other.fd_, -1);
-    }
-    return *this;
-}
-
-std::optional<TcpListener> TcpListener::bind(const std::string& ip, uint16_t port) {
-    // 创建监听 socket
-    const auto listen_fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (listen_fd < 0) {
-        return std::nullopt;
-    }
-
-    TcpListener listener(listen_fd);
-
-    // 允许端口复用
-    int opt = 1;
-    if(setsockopt(listen_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt))<0){
-        return std::nullopt;
-    }
-
-    // 绑定监听地址
-    sockaddr_in addr{};
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(port);
-
-    if (inet_pton(AF_INET, ip.c_str(), &addr.sin_addr) <= 0) {
-        return std::nullopt;
-    }
-
-    if (::bind(listen_fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
-        return std::nullopt;
-    }
-
-    // 开始监听
-    if (listen(listen_fd, 16) < 0) {
-        return std::nullopt;
-    }
-
-    return listener;
-}
-
-std::optional<TcpSocket> TcpListener::accept() const {
-    if (fd_ < 0) {
-        return std::nullopt;
-    }
-
-    const auto client_fd = ::accept(fd_, nullptr, nullptr);
-    if (client_fd < 0) {
-        return std::nullopt;
-    }
-
-    TcpSocket client_socket(client_fd);
-    if (!client_socket.setTimeout()) {
-        return std::nullopt;
-    }
-
-    return client_socket;
 }
 
 } // namespace tinyrpc

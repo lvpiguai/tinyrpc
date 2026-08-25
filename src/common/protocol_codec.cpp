@@ -158,8 +158,8 @@ RpcStatus decode(std::string_view frame, RpcRequest& request) {
 RpcStatus encode(const RpcResponse& response, std::string& frame) {
     // 根据逻辑响应组装 protobuf 响应头
     RpcResponseHeader header;
-    header.set_status_code(response.status_code);
-    header.set_status_text(response.status_text);
+    header.set_success(response.success);
+    header.set_error_message(response.error_message);
     return buildFrame(header, response.body, frame);
 }
 
@@ -181,8 +181,8 @@ RpcStatus decode(std::string_view frame, RpcResponse& response) {
     }
 
     // 填充逻辑响应
-    response.status_code = response_header.status_code();
-    response.status_text = response_header.status_text();
+    response.success = response_header.success();
+    response.error_message = response_header.error_message();
     response.body.assign(body.data(), body.size());
     return {};
 }
