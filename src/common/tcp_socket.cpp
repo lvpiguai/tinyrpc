@@ -1,8 +1,11 @@
 #include <tinyrpc/common/tcp_socket.h>
 
 #include <arpa/inet.h>
+#include <cerrno>
+#include <chrono>
 #include <fcntl.h>
 #include <netinet/in.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <unistd.h>
@@ -33,7 +36,14 @@ TcpSocket& TcpSocket::operator=(TcpSocket&& other) noexcept {
     return *this;
 }
 
-std::optional<TcpSocket> TcpSocket::connect(const std::string& ip, uint16_t port) {
+std::optional<TcpSocket> TcpSocket::connect(const std::string& ip,
+                                            uint16_t port,
+                                            int timeout_ms) {
+    if (timeout_ms <= 0) {
+        errno = EINVAL;
+        return std::nullopt;
+    }
+
     // 创建 TCP socket
     const auto fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) {
@@ -52,12 +62,64 @@ std::optional<TcpSocket> TcpSocket::connect(const std::string& ip, uint16_t port
         return std::nullopt;
     }
 
-    // 发起连接
-    if (::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
+    // 非阻塞 connect 才能限制连接建立阶段的等待时间
+    if (!socket.setNonBlocking()) {
         return std::nullopt;
     }
 
-    if (!socket.setTimeout()) {
+    const auto connected =
+        ::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
+    if (connected < 0 && errno != EINPROGRESS) {
+        return std::nullopt;
+    }
+
+    if (connected < 0) {
+        pollfd event{fd, POLLOUT, 0};
+        const auto deadline = std::chrono::steady_clock::now() +
+                              std::chrono::milliseconds(timeout_ms);
+
+        while (true) {
+            const auto now = std::chrono::steady_clock::now();
+            if (now >= deadline) {
+                errno = ETIMEDOUT;
+                return std::nullopt;
+            }
+
+            auto remaining_ms = std::chrono::duration_cast<
+                std::chrono::milliseconds>(deadline - now).count();
+            if (remaining_ms == 0) {
+                remaining_ms = 1;
+            }
+
+            const auto ready = poll(&event, 1,
+                                    static_cast<int>(remaining_ms));
+            if (ready == 0) {
+                errno = ETIMEDOUT;
+                return std::nullopt;
+            }
+            if (ready < 0) {
+                if (errno == EINTR) {
+                    continue;
+                }
+                return std::nullopt;
+            }
+
+            int socket_error = 0;
+            socklen_t error_size = sizeof(socket_error);
+            if (getsockopt(fd, SOL_SOCKET, SO_ERROR,
+                           &socket_error, &error_size) < 0) {
+                return std::nullopt;
+            }
+            if (socket_error != 0) {
+                errno = socket_error;
+                return std::nullopt;
+            }
+            break;
+        }
+    }
+
+    // 建连完成后恢复阻塞模式，并设置后续收发超时
+    if (!socket.setNonBlocking(false) || !socket.setTimeout(timeout_ms)) {
         return std::nullopt;
     }
 
@@ -118,10 +180,19 @@ bool TcpSocket::sendAll(const char* data, size_t len) {
 
     while (sent < len) {
         const auto n = sendSome(data + sent, len - sent);
+        if (n > 0) {
+            sent += static_cast<size_t>(n);
+            continue;
+        }
+        if (n < 0 && errno == EINTR) {
+            continue;
+        }
+        if (n == 0) {
+            errno = EPIPE;
+        }
         if (n <= 0) {
             return false;
         }
-        sent += static_cast<size_t>(n);
     }
 
     return true;
@@ -153,10 +224,19 @@ bool TcpSocket::recvAll(char* data, size_t len) {
 
     while (received < len) {
         const auto n = recv(fd_, data + received, len - received, 0);
+        if (n > 0) {
+            received += static_cast<size_t>(n);
+            continue;
+        }
+        if (n < 0 && errno == EINTR) {
+            continue;
+        }
+        if (n == 0) {
+            errno = ECONNRESET;
+        }
         if (n <= 0) {
             return false;
         }
-        received += static_cast<size_t>(n);
     }
 
     return true;
@@ -178,7 +258,14 @@ std::optional<std::string> TcpSocket::recvLine(size_t max_size) {
     char ch = '\0';
     while (true) {
         const auto n = recv(fd_, &ch, 1, 0);
-        if (n <= 0) {
+        if (n < 0 && errno == EINTR) {
+            continue;
+        }
+        if (n == 0) {
+            errno = ECONNRESET;
+            return std::nullopt;
+        }
+        if (n < 0) {
             return std::nullopt;
         }
 

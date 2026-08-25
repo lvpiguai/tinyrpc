@@ -31,6 +31,9 @@ public:
     // 设置连接池最大连接数，最小值为 1
     void setMaxConnections(size_t max_connections);
 
+    // 设置服务发现、建连及单次收发的超时时间
+    void setTimeout(int timeout_ms);
+
     void CallMethod(const google::protobuf::MethodDescriptor* method,
                     google::protobuf::RpcController* controller,
                     const google::protobuf::Message* request,
@@ -52,7 +55,8 @@ private:
     using ConnectionPtr = std::shared_ptr<PooledConnection>;
 
     std::vector<Endpoint> findServiceEndpoints(
-        const std::string& service_name);
+        const std::string& service_name,
+        int timeout_ms);
 
     // 获取一条空闲连接，连接池未满时创建新连接
     ConnectionPtr acquireConnection(const std::string& service_name);
@@ -66,6 +70,7 @@ private:
     // 连接池状态，单条连接同一时间只允许一个 RPC 使用
     std::vector<ConnectionPtr> connections_;
     size_t max_connections_ = 4;
+    int timeout_ms_ = TcpSocket::kDefaultTimeoutMs;
     size_t connecting_count_ = 0;
     std::unordered_map<std::string, size_t> next_endpoint_indices_;
     std::mutex pool_mutex_;

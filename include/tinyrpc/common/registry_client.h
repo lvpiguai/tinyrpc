@@ -12,6 +12,7 @@ class RegistryClient {
 public:
     // 配置注册中心地址
     explicit RegistryClient(Endpoint registry_endpoint);
+    RegistryClient(Endpoint registry_endpoint, int timeout_ms);
 
     // 注册服务端点
     bool registerServiceEndpoint(const std::string& service_name,
@@ -28,6 +29,7 @@ public:
 private:
     // 注册中心地址
     Endpoint registry_endpoint_;
+    int timeout_ms_;
 };
 
 } // namespace tinyrpc

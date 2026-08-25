@@ -35,16 +35,27 @@ void RpcChannel::setMaxConnections(size_t max_connections) {
     pool_cv_.notify_all();
 }
 
+void RpcChannel::setTimeout(int timeout_ms) {
+    std::lock_guard<std::mutex> lock(pool_mutex_);
+    timeout_ms_ = std::max(1, timeout_ms);
+
+    // 配置更新时同步应用到连接池中的已有连接
+    for (const auto& connection : connections_) {
+        connection->socket.setTimeout(timeout_ms_);
+    }
+}
+
 // 返回本次建连的候选端点，注册模式从轮询位置开始排列
 std::vector<Endpoint> RpcChannel::findServiceEndpoints(
-    const std::string& service_name) {
+    const std::string& service_name,
+    int timeout_ms) {
     // 使用直连服务端地址
     if (mode_ == Mode::Direct) {
         return {endpoint_};
     }
 
     // 获取全部服务实例，由客户端选择本次连接的目标
-    RegistryClient registry(endpoint_);
+    RegistryClient registry(endpoint_, timeout_ms);
     const auto endpoints = registry.discoverServiceEndpoints(service_name);
     if (endpoints.empty()) {
         return {};
@@ -107,16 +118,19 @@ RpcChannel::ConnectionPtr RpcChannel::acquireConnection(
         }
 
         // 先预留连接名额，再释放锁执行可能阻塞的服务发现和 connect
+        const auto timeout_ms = timeout_ms_;
         ++connecting_count_;
         lock.unlock();
 
-        const auto target_endpoints = findServiceEndpoints(service_name);
+        const auto target_endpoints = findServiceEndpoints(service_name,
+                                                           timeout_ms);
         std::optional<TcpSocket> socket;
         std::optional<Endpoint> connected_endpoint;
         // 只在发送请求前尝试其他实例，不重放已经发送的 RPC
         for (const auto& target_endpoint : target_endpoints) {
             socket = TcpSocket::connect(target_endpoint.ip,
-                                        target_endpoint.port);
+                                        target_endpoint.port,
+                                        timeout_ms);
             if (socket) {
                 connected_endpoint = target_endpoint;
                 break;

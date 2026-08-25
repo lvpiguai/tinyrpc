@@ -4,6 +4,7 @@
 
 #include <arpa/inet.h>
 
+#include <cerrno>
 #include <cstdint>
 #include <string>
 #include <string_view>
@@ -14,6 +15,14 @@ namespace {
 
 // 帧长度字段固定为 4 字节
 constexpr std::size_t kFrameSizeFieldSize = sizeof(uint32_t);
+
+// 将 socket 超时与普通网络错误区分开
+RpcStatus transportError(const std::string& action) {
+    if (errno == EAGAIN || errno == EWOULDBLOCK || errno == ETIMEDOUT) {
+        return {RpcErrorCode::TIMEOUT, action + " timed out"};
+    }
+    return {RpcErrorCode::NETWORK_ERROR, action + " failed"};
+}
 
 } // namespace
 
@@ -36,7 +45,7 @@ RpcStatus TcpFrameTransport::sendFrame(std::string_view frame) {
     if (!socket_.sendAll(reinterpret_cast<const char*>(&network_frame_size),
                          kFrameSizeFieldSize) ||
         !socket_.sendAll(frame.data(), frame.size())) {
-        return {RpcErrorCode::NETWORK_ERROR, "send rpc frame failed"};
+        return transportError("send rpc frame");
     }
 
     return {};
@@ -48,7 +57,7 @@ RpcStatus TcpFrameTransport::receiveFrame(std::string& frame) {
     uint32_t network_frame_size = 0;
     if (!socket_.recvAll(reinterpret_cast<char*>(&network_frame_size),
                          kFrameSizeFieldSize)) {
-        return {RpcErrorCode::NETWORK_ERROR, "receive rpc frame size failed"};
+        return transportError("receive rpc frame size");
     }
 
     // 转换为主机字节序并校验帧长度
@@ -59,7 +68,7 @@ RpcStatus TcpFrameTransport::receiveFrame(std::string& frame) {
 
     // 根据 frame_size 接收完整帧
     if (!socket_.recvAll(frame, frame_size)) {
-        return {RpcErrorCode::NETWORK_ERROR, "receive rpc frame failed"};
+        return transportError("receive rpc frame");
     }
 
     return {};

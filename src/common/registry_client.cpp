@@ -18,7 +18,12 @@ constexpr std::size_t kMaxRegistryLineSize = 64 * 1024;
 
 // 配置注册中心地址
 RegistryClient::RegistryClient(Endpoint registry_endpoint)
-    : registry_endpoint_(std::move(registry_endpoint)) {}
+    : RegistryClient(std::move(registry_endpoint),
+                     TcpSocket::kDefaultTimeoutMs) {}
+
+RegistryClient::RegistryClient(Endpoint registry_endpoint, int timeout_ms)
+    : registry_endpoint_(std::move(registry_endpoint)),
+      timeout_ms_(timeout_ms) {}
 
 // 向注册中心注册服务端点
 bool RegistryClient::registerServiceEndpoint(
@@ -26,7 +31,8 @@ bool RegistryClient::registerServiceEndpoint(
     const Endpoint& service_endpoint) {
     // 连接注册中心
     auto socket = TcpSocket::connect(registry_endpoint_.ip,
-                                     registry_endpoint_.port);
+                                     registry_endpoint_.port,
+                                     timeout_ms_);
     if (!socket) {
         return false;
     }
@@ -49,7 +55,8 @@ bool RegistryClient::heartbeatServiceEndpoint(
     const std::string& service_name,
     const Endpoint& service_endpoint) {
     auto socket = TcpSocket::connect(registry_endpoint_.ip,
-                                     registry_endpoint_.port);
+                                     registry_endpoint_.port,
+                                     timeout_ms_);
     if (!socket) {
         return false;
     }
@@ -70,7 +77,8 @@ std::vector<Endpoint> RegistryClient::discoverServiceEndpoints(
     const std::string& service_name) {
     // 连接注册中心
     auto socket = TcpSocket::connect(registry_endpoint_.ip,
-                                     registry_endpoint_.port);
+                                     registry_endpoint_.port,
+                                     timeout_ms_);
     if (!socket) {
         return {};
     }

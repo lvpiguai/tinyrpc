@@ -24,8 +24,11 @@ public:
     TcpSocket(TcpSocket&& other) noexcept;
     TcpSocket& operator=(TcpSocket&& other) noexcept;
 
-    // 连接远程服务器
-    static std::optional<TcpSocket> connect(const std::string& ip, uint16_t port);
+    // 在指定超时时间内连接远程服务器
+    static std::optional<TcpSocket> connect(
+        const std::string& ip,
+        uint16_t port,
+        int timeout_ms = kDefaultTimeoutMs);
 
     // 设置收发超时
     bool setTimeout(int timeout_ms = kDefaultTimeoutMs);

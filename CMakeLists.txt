@@ -104,4 +104,15 @@ if(BUILD_TESTING)
     )
 
     add_test(NAME protocol_codec_test COMMAND protocol_codec_test)
+
+    add_executable(tcp_socket_timeout_test
+        tests/tcp_socket_timeout_test.cpp
+    )
+
+    target_link_libraries(tcp_socket_timeout_test
+        PRIVATE
+            tinyrpc_lib
+    )
+
+    add_test(NAME tcp_socket_timeout_test COMMAND tcp_socket_timeout_test)
 endif()
