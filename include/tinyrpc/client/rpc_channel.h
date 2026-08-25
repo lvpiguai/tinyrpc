@@ -5,8 +5,13 @@
 
 #include <google/protobuf/service.h>
 
+#include <condition_variable>
+#include <cstddef>
+#include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace tinyrpc {
 
@@ -22,6 +27,9 @@ public:
     // 配置寻址方式和网络端点
     RpcChannel(Mode mode, Endpoint endpoint);
 
+    // 设置连接池最大连接数，最小值为 1
+    void setMaxConnections(size_t max_connections);
+
     void CallMethod(const google::protobuf::MethodDescriptor* method,
                     google::protobuf::RpcController* controller,
                     const google::protobuf::Message* request,
@@ -29,21 +37,35 @@ public:
                     google::protobuf::Closure* done) override;
 
 private:
+    struct PooledConnection {
+        PooledConnection(TcpSocket socket_value,
+                         std::string service_name_value);
+
+        TcpSocket socket;
+        std::string service_name;
+        bool in_use = true;
+    };
+
+    using ConnectionPtr = std::shared_ptr<PooledConnection>;
+
     std::optional<Endpoint> findServiceEndpoint(
         const std::string& service_name) const;
 
-    // 获取当前长连接，不存在时连接目标服务
-    TcpSocket* getConnection(const std::string& service_name);
+    // 获取一条空闲连接，连接池未满时创建新连接
+    ConnectionPtr acquireConnection(const std::string& service_name);
 
-    // 关闭失效连接并清理关联服务名
-    void closeConnection();
+    // 归还健康连接，或移除失效连接
+    void releaseConnection(const ConnectionPtr& connection, bool healthy);
 
     Mode mode_;
     Endpoint endpoint_;
 
-    // 同一个 RpcChannel 的串行调用复用该连接
-    std::optional<TcpSocket> socket_;
-    std::string connected_service_name_;
+    // 连接池状态，单条连接同一时间只允许一个 RPC 使用
+    std::vector<ConnectionPtr> connections_;
+    size_t max_connections_ = 4;
+    size_t connecting_count_ = 0;
+    std::mutex pool_mutex_;
+    std::condition_variable pool_cv_;
 };
 
 } // namespace tinyrpc
