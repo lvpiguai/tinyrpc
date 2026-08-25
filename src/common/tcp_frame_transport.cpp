@@ -41,10 +41,14 @@ RpcStatus TcpFrameTransport::sendFrame(std::string_view frame) {
     const auto frame_size = static_cast<uint32_t>(frame.size());
     const auto network_frame_size = htonl(frame_size);
 
-    // 依次发送帧长度和完整帧
-    if (!socket_.sendAll(reinterpret_cast<const char*>(&network_frame_size),
-                         kFrameSizeFieldSize) ||
-        !socket_.sendAll(frame.data(), frame.size())) {
+    // 合并长度字段和帧内容，避免两个小包触发 Nagle/延迟确认等待
+    std::string transport_data;
+    transport_data.reserve(kFrameSizeFieldSize + frame.size());
+    transport_data.append(
+        reinterpret_cast<const char*>(&network_frame_size),
+        kFrameSizeFieldSize);
+    transport_data.append(frame.data(), frame.size());
+    if (!socket_.sendAll(transport_data)) {
         return transportError("send rpc frame");
     }
 
