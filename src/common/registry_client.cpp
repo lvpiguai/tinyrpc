@@ -72,6 +72,28 @@ bool RegistryClient::heartbeatServiceEndpoint(
     return response && *response == "OK";
 }
 
+// 从注册中心主动注销服务端点
+bool RegistryClient::unregisterServiceEndpoint(
+    const std::string& service_name,
+    const Endpoint& service_endpoint) {
+    auto socket = TcpSocket::connect(registry_endpoint_.ip,
+                                     registry_endpoint_.port,
+                                     timeout_ms_);
+    if (!socket) {
+        return false;
+    }
+
+    std::ostringstream request;
+    request << "UNREGISTER " << service_name << " "
+            << service_endpoint.ip << " " << service_endpoint.port << "\n";
+    if (!socket->sendAll(request.str())) {
+        return false;
+    }
+
+    const auto response = socket->recvLine(kMaxRegistryLineSize);
+    return response && *response == "OK";
+}
+
 // 从注册中心发现服务的全部实例
 std::vector<Endpoint> RegistryClient::discoverServiceEndpoints(
     const std::string& service_name) {

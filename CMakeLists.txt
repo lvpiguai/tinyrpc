@@ -115,4 +115,16 @@ if(BUILD_TESTING)
     )
 
     add_test(NAME tcp_socket_timeout_test COMMAND tcp_socket_timeout_test)
+
+    add_executable(service_lifecycle_test
+        tests/service_lifecycle_test.cpp
+    )
+
+    target_link_libraries(service_lifecycle_test
+        PRIVATE
+            tinyrpc_lib
+            calculator_proto
+    )
+
+    add_test(NAME service_lifecycle_test COMMAND service_lifecycle_test)
 endif()

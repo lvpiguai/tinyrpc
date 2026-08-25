@@ -22,6 +22,10 @@ public:
     bool heartbeatServiceEndpoint(const std::string& service_name,
                                   const Endpoint& service_endpoint);
 
+    // 主动注销服务端点
+    bool unregisterServiceEndpoint(const std::string& service_name,
+                                   const Endpoint& service_endpoint);
+
     // 发现服务的全部实例
     std::vector<Endpoint> discoverServiceEndpoints(
         const std::string& service_name);

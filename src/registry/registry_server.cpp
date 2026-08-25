@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <iostream>
 #include <memory>
+#include <sys/socket.h>
 #include <sstream>
 #include <string>
 #include <utility>
@@ -36,13 +37,25 @@ RegistryServer::RegistryServer(Endpoint listen_endpoint)
     : listen_endpoint_(std::move(listen_endpoint)) {}
 
 RegistryServer::~RegistryServer() {
+    stop();
+    if (cleanup_thread_.joinable()) {
+        cleanup_thread_.join();
+    }
+}
+
+// 请求停止注册中心，并打断阻塞中的 accept
+void RegistryServer::stop() {
+    stop_requested_.store(true);
+
     {
         std::lock_guard<std::mutex> lock(mutex_);
         cleanup_stopped_ = true;
     }
     cleanup_cv_.notify_all();
-    if (cleanup_thread_.joinable()) {
-        cleanup_thread_.join();
+
+    std::lock_guard<std::mutex> lock(lifecycle_mutex_);
+    if (listen_fd_ >= 0) {
+        shutdown(listen_fd_, SHUT_RDWR);
     }
 }
 
@@ -86,6 +99,30 @@ void RegistryServer::handleClient(TcpSocket client_socket) {
                 std::cout << "register service: " << service_name << " "
                           << ip << ":" << port << std::endl;
             }
+        }
+    } else if (command == "UNREGISTER") {
+        // 主动注销指定服务实例；实例不存在时也视为成功
+        std::string service_name;
+        std::string ip;
+        uint16_t port = 0;
+        if (iss >> service_name >> ip >> port) {
+            std::lock_guard<std::mutex> lock(mutex_);
+            const auto service = service_endpoints_.find(service_name);
+            if (service != service_endpoints_.end()) {
+                auto& instances = service->second;
+                instances.erase(
+                    std::remove_if(
+                        instances.begin(), instances.end(),
+                        [&](const ServiceInstance& instance) {
+                            return instance.endpoint.ip == ip &&
+                                   instance.endpoint.port == port;
+                        }),
+                    instances.end());
+                if (instances.empty()) {
+                    service_endpoints_.erase(service);
+                }
+            }
+            response = "OK\n";
         }
     } else if (command == "DISCOVER") {
         // 发现服务端点
@@ -149,12 +186,23 @@ void RegistryServer::cleanupLoop() {
 
 // 启动注册中心
 void RegistryServer::run() {
+    stop_requested_.store(false);
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        cleanup_stopped_ = false;
+    }
+
     // 创建注册中心监听 socket
     auto listener = TcpListener::bind(listen_endpoint_.ip,
                                       listen_endpoint_.port);
     if (!listener) {
         std::cerr << "create registry socket failed" << std::endl;
         return;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(lifecycle_mutex_);
+        listen_fd_ = listener->fd();
     }
 
     std::cout << "tinyrpc registry start at " << listen_endpoint_.ip << ":"
@@ -167,9 +215,12 @@ void RegistryServer::run() {
     cleanup_thread_ = std::thread(&RegistryServer::cleanupLoop, this);
 
     // 循环接收客户端连接
-    while (true) {
+    while (!stop_requested_.load()) {
         auto client_socket = listener->accept();
         if (!client_socket) {
+            if (stop_requested_.load()) {
+                break;
+            }
             std::cerr << "accept client failed" << std::endl;
             continue;
         }
@@ -185,6 +236,16 @@ void RegistryServer::run() {
             std::cerr << "registry thread pool queue is full, reject connection"
                       << std::endl;
         }
+    }
+
+    // 等待清理线程退出，确保 RegistryServer 可以安全析构
+    cleanup_cv_.notify_all();
+    if (cleanup_thread_.joinable()) {
+        cleanup_thread_.join();
+    }
+    {
+        std::lock_guard<std::mutex> lock(lifecycle_mutex_);
+        listen_fd_ = -1;
     }
 }
 

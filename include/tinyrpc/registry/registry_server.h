@@ -2,6 +2,7 @@
 
 #include <tinyrpc/common/endpoint.h>
 
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <mutex>
@@ -23,6 +24,9 @@ public:
 
     // 启动注册中心
     void run();
+
+    // 请求注册中心停止，并唤醒阻塞中的 accept
+    void stop();
 
 private:
     struct ServiceInstance {
@@ -48,6 +52,11 @@ private:
     std::condition_variable cleanup_cv_;
     bool cleanup_stopped_ = false;
     std::thread cleanup_thread_;
+
+    // 监听 socket 生命周期状态
+    std::atomic<bool> stop_requested_{false};
+    std::mutex lifecycle_mutex_;
+    int listen_fd_ = -1;
 };
 
 } // namespace tinyrpc

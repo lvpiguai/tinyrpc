@@ -4,6 +4,7 @@
 
 #include <google/protobuf/service.h>
 
+#include <atomic>
 #include <condition_variable>
 #include <cstddef>
 #include <mutex>
@@ -35,6 +36,9 @@ public:
     // 启动 RPC 服务并监听指定地址
     void run();
 
+    // 请求服务端优雅停止
+    void stop();
+
 private:
     // 处理完整请求帧并返回编码后的响应帧
     std::string handleRequest(const std::string& frame);
@@ -42,6 +46,9 @@ private:
     // 启动和停止注册中心心跳线程
     void startHeartbeat();
     void stopHeartbeat();
+
+    // 从注册中心注销当前服务端提供的全部服务
+    void unregisterServices();
 
 private:
     // 按服务全名保存业务实现，RpcServer 不拥有这些对象
@@ -58,6 +65,11 @@ private:
     std::condition_variable heartbeat_cv_;
     bool heartbeat_stopped_ = true;
     std::thread heartbeat_thread_;
+
+    // stop() 通过 completion_fd 唤醒 Reactor
+    std::atomic<bool> stop_requested_{false};
+    std::mutex lifecycle_mutex_;
+    int completion_fd_ = -1;
 };
 
 } // namespace tinyrpc

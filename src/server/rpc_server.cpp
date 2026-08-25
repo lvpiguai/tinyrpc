@@ -168,7 +168,7 @@ RpcServer::RpcServer(Endpoint listen_endpoint)
     : listen_endpoint_(std::move(listen_endpoint)) {}
 
 RpcServer::~RpcServer() {
-    stopHeartbeat();
+    stop();
 }
 
 // 注册本地业务服务
@@ -234,8 +234,40 @@ void RpcServer::stopHeartbeat() {
     }
 }
 
+// 从注册中心主动删除当前服务端提供的全部服务
+void RpcServer::unregisterServices() {
+    if (!registry_endpoint_) {
+        return;
+    }
+
+    RegistryClient registry(*registry_endpoint_);
+    for (const auto& item : services_) {
+        if (!registry.unregisterServiceEndpoint(item.first,
+                                                listen_endpoint_)) {
+            std::cerr << "unregister service failed: " << item.first
+                      << std::endl;
+        }
+    }
+}
+
+// 设置停止标记，并使用 eventfd 唤醒阻塞中的 epoll_wait
+void RpcServer::stop() {
+    stop_requested_.store(true);
+    stopHeartbeat();
+
+    std::lock_guard<std::mutex> lock(lifecycle_mutex_);
+    if (completion_fd_ >= 0) {
+        uint64_t one = 1;
+        while (write(completion_fd_, &one, sizeof(one)) < 0 &&
+               errno == EINTR) {
+        }
+    }
+}
+
 // 启动 RPC 服务端
 void RpcServer::run() {
+    stop_requested_.store(false);
+
     // 创建监听 socket
     auto listener = TcpListener::bind(listen_endpoint_.ip,
                                       listen_endpoint_.port);
@@ -251,17 +283,6 @@ void RpcServer::run() {
         if (worker_count == 0) {
             // 无法获取硬件并发数时使用默认值
             worker_count = 4;
-        }
-    }
-
-    // 启用注册中心时，发布当前服务端提供的全部服务
-    if (registry_endpoint_) {
-        RegistryClient registry(*registry_endpoint_);
-        for (const auto& item : services_) {
-            if (!registry.registerServiceEndpoint(item.first,
-                                                  listen_endpoint_)) {
-                std::cerr << "register service to registry failed: " << item.first << std::endl;
-            }
         }
     }
 
@@ -305,6 +326,11 @@ void RpcServer::run() {
         return;
     }
 
+    {
+        std::lock_guard<std::mutex> lock(lifecycle_mutex_);
+        completion_fd_ = completion_fd;
+    }
+
     // Reactor 线程持有尚未交给工作线程的客户端连接
     std::unordered_map<int, ClientConnection> clients;
 
@@ -317,11 +343,23 @@ void RpcServer::run() {
         std::make_unique<ThreadPool>(worker_count, max_queue_size_);
     std::array<epoll_event, kMaxEpollEvents> events{};
 
+    // 网络初始化成功后，发布当前服务端提供的全部服务
+    if (registry_endpoint_) {
+        RegistryClient registry(*registry_endpoint_);
+        for (const auto& item : services_) {
+            if (!registry.registerServiceEndpoint(item.first,
+                                                  listen_endpoint_)) {
+                std::cerr << "register service to registry failed: "
+                          << item.first << std::endl;
+            }
+        }
+    }
+
     // 网络初始化完成后开始周期性续约服务实例
     startHeartbeat();
 
     // 等待监听 socket 或客户端 socket 就绪
-    while (true) {
+    while (!stop_requested_.load()) {
         const auto event_count = epoll_wait(epoll_fd,
                                             events.data(),
                                             static_cast<int>(events.size()),
@@ -332,11 +370,8 @@ void RpcServer::run() {
             }
             std::cerr << "epoll_wait failed: " << std::strerror(errno)
                       << std::endl;
-            stopHeartbeat();
-            thread_pool.reset();
-            close(completion_fd);
-            close(epoll_fd);
-            return;
+            stop_requested_.store(true);
+            break;
         }
 
         for (int i = 0; i < event_count; ++i) {
@@ -351,6 +386,11 @@ void RpcServer::run() {
                             &completed_count,
                             sizeof(completed_count)) < 0 &&
                        errno == EINTR) {
+                }
+
+                // stop() 只负责唤醒 Reactor，不再处理新的完成响应
+                if (stop_requested_.load()) {
+                    break;
                 }
 
                 std::queue<CompletedResponse> ready_responses;
@@ -523,6 +563,23 @@ void RpcServer::run() {
             }
         }
     }
+
+    // 先停止心跳，避免注销后又被下一次心跳重新加入
+    stopHeartbeat();
+
+    // 等待已提交业务执行结束，再关闭它们仍会写入的 completion_fd
+    thread_pool.reset();
+    clients.clear();
+    listener.reset();
+
+    {
+        std::lock_guard<std::mutex> lock(lifecycle_mutex_);
+        completion_fd_ = -1;
+        close(completion_fd);
+    }
+    close(epoll_fd);
+
+    unregisterServices();
 }
 
 // 处理完整请求帧并生成响应帧，不执行网络收发
