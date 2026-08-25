@@ -40,6 +40,9 @@ public:
     bool sendAll(const std::string& data);
     bool sendAll(const char* data, size_t len);
 
+    // 发送当前能够写入的数据，返回值沿用 send 语义
+    ssize_t sendSome(const char* data, size_t len);
+
     // 接收当前可读的数据，返回值沿用 recv 语义
     ssize_t recvSome(char* data, size_t len);
 

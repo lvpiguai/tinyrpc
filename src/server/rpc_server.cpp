@@ -11,6 +11,7 @@
 #include <google/protobuf/descriptor.h>
 #include <google/protobuf/message.h>
 #include <sys/epoll.h>
+#include <sys/eventfd.h>
 #include <unistd.h>
 
 #include <array>
@@ -19,7 +20,9 @@
 #include <cstring>
 #include <iostream>
 #include <memory>
+#include <mutex>
 #include <optional>
+#include <queue>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -46,6 +49,14 @@ struct ClientConnection {
     TcpSocket socket;                         // 连接所有权
     std::string input;                        // 已读取但尚未处理的数据
     std::optional<std::size_t> frame_size;    // 长度字段解析后的帧大小
+    std::string output;                       // 等待发送的传输层数据
+    std::size_t sent_size = 0;                // 已发送字节数
+};
+
+// 工作线程完成业务处理后交给 Reactor 的结果
+struct CompletedResponse {
+    int client_fd;
+    std::string frame;
 };
 
 // Reactor 尝试读取一帧后的结果
@@ -109,28 +120,32 @@ ReadFrameResult readAvailableFrame(ClientConnection& client,
     }
 }
 
-// 编码并发送 RPC 响应帧
-bool sendRpcResponse(TcpFrameTransport& transport, const RpcResponse& response) {
+// 编码 RPC 响应帧，失败时返回空字符串
+std::string encodeRpcResponse(const RpcResponse& response) {
     std::string frame;
     const auto status = protocol_codec::encode(response, frame);
-    return status.ok() && transport.sendFrame(frame).ok();
+    return status.ok() ? frame : std::string{};
 }
 
-// 发送成功响应
-bool sendSuccessResponse(TcpFrameTransport& transport,
-                         const std::string& response_body) {
-    RpcResponse response;
-    response.body = response_body;
-    return sendRpcResponse(transport, response);
-}
-
-// 发送错误响应
-bool sendErrorResponse(TcpFrameTransport& transport,
-                       const std::string& error_message) {
+// 构造并编码错误响应
+std::string encodeErrorResponse(const std::string& error_message) {
     RpcResponse response;
     response.success = false;
     response.error_message = error_message;
-    return sendRpcResponse(transport, response);
+    return encodeRpcResponse(response);
+}
+
+// 为 RPC 帧添加 4 字节网络序长度字段
+std::string buildTransportData(const std::string& frame) {
+    const auto network_frame_size =
+        htonl(static_cast<uint32_t>(frame.size()));
+
+    std::string data;
+    data.reserve(kFrameSizeFieldSize + frame.size());
+    data.append(reinterpret_cast<const char*>(&network_frame_size),
+                kFrameSizeFieldSize);
+    data.append(frame);
+    return data;
 }
 
 } // namespace
@@ -179,9 +194,6 @@ void RpcServer::run() {
         }
     }
 
-    // 创建 RPC 请求处理线程池
-    ThreadPool thread_pool(worker_count, max_queue_size_);
-
     // 启用注册中心时，发布当前服务端提供的全部服务
     if (registry_endpoint_) {
         RegistryClient registry(*registry_endpoint_);
@@ -212,8 +224,37 @@ void RpcServer::run() {
         return;
     }
 
+    // eventfd 用于让工作线程唤醒阻塞在 epoll_wait 的 Reactor
+    const auto completion_fd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+    if (completion_fd < 0) {
+        std::cerr << "create completion eventfd failed" << std::endl;
+        close(epoll_fd);
+        return;
+    }
+
+    epoll_event completion_event{};
+    completion_event.events = EPOLLIN;
+    completion_event.data.fd = completion_fd;
+    if (epoll_ctl(epoll_fd,
+                  EPOLL_CTL_ADD,
+                  completion_fd,
+                  &completion_event) < 0) {
+        std::cerr << "add completion eventfd to epoll failed" << std::endl;
+        close(completion_fd);
+        close(epoll_fd);
+        return;
+    }
+
     // Reactor 线程持有尚未交给工作线程的客户端连接
     std::unordered_map<int, ClientConnection> clients;
+
+    // 工作线程写入完成队列，Reactor 被 eventfd 唤醒后取出
+    std::mutex completed_mutex;
+    std::queue<CompletedResponse> completed_responses;
+
+    // 后创建线程池，退出时先等待工作线程，再销毁完成队列
+    auto thread_pool =
+        std::make_unique<ThreadPool>(worker_count, max_queue_size_);
     std::array<epoll_event, kMaxEpollEvents> events{};
 
     // 等待监听 socket 或客户端 socket 就绪
@@ -228,6 +269,8 @@ void RpcServer::run() {
             }
             std::cerr << "epoll_wait failed: " << std::strerror(errno)
                       << std::endl;
+            thread_pool.reset();
+            close(completion_fd);
             close(epoll_fd);
             return;
         }
@@ -236,6 +279,53 @@ void RpcServer::run() {
             // epoll 通过 data.fd 告知本次就绪的文件描述符
             const auto ready_fd = events[i].data.fd;
             const auto ready_events = events[i].events;
+
+            // 处理工作线程已经生成的响应帧
+            if (ready_fd == completion_fd) {
+                uint64_t completed_count = 0;
+                while (read(completion_fd,
+                            &completed_count,
+                            sizeof(completed_count)) < 0 &&
+                       errno == EINTR) {
+                }
+
+                std::queue<CompletedResponse> ready_responses;
+                {
+                    std::lock_guard<std::mutex> lock(completed_mutex);
+                    ready_responses.swap(completed_responses);
+                }
+
+                while (!ready_responses.empty()) {
+                    auto completed = std::move(ready_responses.front());
+                    ready_responses.pop();
+
+                    const auto completed_client =
+                        clients.find(completed.client_fd);
+                    if (completed_client == clients.end()) {
+                        continue;
+                    }
+                    if (completed.frame.empty()) {
+                        clients.erase(completed_client);
+                        continue;
+                    }
+
+                    completed_client->second.output =
+                        buildTransportData(completed.frame);
+                    completed_client->second.sent_size = 0;
+
+                    // 响应准备完成后重新加入 epoll，等待 socket 可写
+                    epoll_event write_event{};
+                    write_event.events = EPOLLOUT | EPOLLRDHUP;
+                    write_event.data.fd = completed.client_fd;
+                    if (epoll_ctl(epoll_fd,
+                                  EPOLL_CTL_ADD,
+                                  completed.client_fd,
+                                  &write_event) < 0) {
+                        clients.erase(completed_client);
+                    }
+                }
+                continue;
+            }
 
             // 监听 socket 可读时，接收一个连接并交给 epoll 监听
             if (ready_fd == listen_fd) {
@@ -281,57 +371,89 @@ void RpcServer::run() {
                 continue;
             }
 
-            if ((ready_events & EPOLLIN) == 0) {
-                continue;
-            }
+            if ((ready_events & EPOLLIN) != 0) {
+                // Reactor 只读取当前已经到达的数据，不在这里等待
+                std::string frame;
+                const auto read_result = readAvailableFrame(client_it->second,
+                                                            frame);
+                if (read_result == ReadFrameResult::Incomplete) {
+                    continue;
+                }
+                if (read_result == ReadFrameResult::Closed) {
+                    epoll_ctl(epoll_fd, EPOLL_CTL_DEL, ready_fd, nullptr);
+                    clients.erase(client_it);
+                    continue;
+                }
 
-            // Reactor 只读取当前已经到达的数据，不在这里等待
-            std::string frame;
-            const auto read_result = readAvailableFrame(client_it->second,
-                                                        frame);
-            if (read_result == ReadFrameResult::Incomplete) {
-                continue;
-            }
-            if (read_result == ReadFrameResult::Closed) {
+                // 业务处理期间暂时移出 epoll，连接仍由 Reactor 持有
                 epoll_ctl(epoll_fd, EPOLL_CTL_DEL, ready_fd, nullptr);
-                clients.erase(client_it);
+                const auto submitted = thread_pool->submit(
+                    [this, ready_fd, frame = std::move(frame),
+                     &completed_mutex, &completed_responses,
+                     completion_fd]() mutable {
+                        auto response_frame = handleRequest(frame);
+                        {
+                            std::lock_guard<std::mutex> lock(completed_mutex);
+                            completed_responses.push(
+                                {ready_fd, std::move(response_frame)});
+                        }
+
+                        // 写入计数器，使 completion_fd 产生 EPOLLIN
+                        uint64_t one = 1;
+                        while (write(completion_fd, &one, sizeof(one)) < 0 &&
+                               errno == EINTR) {
+                        }
+                    });
+                if (!submitted) {
+                    std::cerr
+                        << "rpc thread pool queue is full, reject connection"
+                        << std::endl;
+                    clients.erase(client_it);
+                }
                 continue;
             }
 
-            // 完整帧到达后移出 epoll，再交给工作线程
-            epoll_ctl(epoll_fd, EPOLL_CTL_DEL, ready_fd, nullptr);
+            if ((ready_events & EPOLLOUT) != 0) {
+                auto& client = client_it->second;
+                bool send_failed = false;
 
-            // 当前响应仍使用阻塞 sendAll，移交前恢复阻塞模式
-            if (!client_it->second.socket.setNonBlocking(false)) {
-                clients.erase(client_it);
-                continue;
-            }
-            auto shared_socket = std::make_shared<TcpSocket>(
-                std::move(client_it->second.socket));
-            clients.erase(client_it);
+                // 尽可能发送，直到全部完成或内核发送缓冲区已满
+                while (client.sent_size < client.output.size()) {
+                    const auto sent = client.socket.sendSome(
+                        client.output.data() + client.sent_size,
+                        client.output.size() - client.sent_size);
+                    if (sent > 0) {
+                        client.sent_size += static_cast<std::size_t>(sent);
+                        continue;
+                    }
+                    if (sent < 0 && errno == EINTR) {
+                        continue;
+                    }
+                    if (sent < 0 &&
+                        (errno == EAGAIN || errno == EWOULDBLOCK)) {
+                        break;
+                    }
+                    send_failed = true;
+                    break;
+                }
 
-            // shared_ptr 让包含移动型 Socket 的任务可以存入 std::function
-            const auto submitted = thread_pool.submit(
-                [this, shared_socket, frame = std::move(frame)]() mutable {
-                    handleClient(std::move(*shared_socket), std::move(frame));
-                });
-            if (!submitted) {
-                std::cerr << "rpc thread pool queue is full, reject connection"
-                          << std::endl;
+                // 当前仍是一连接一请求，响应发送完成后关闭连接
+                if (send_failed || client.sent_size == client.output.size()) {
+                    epoll_ctl(epoll_fd, EPOLL_CTL_DEL, ready_fd, nullptr);
+                    clients.erase(client_it);
+                }
             }
         }
     }
 }
 
-// 处理单个客户端连接
-void RpcServer::handleClient(TcpSocket client_socket, std::string frame) {
-    TcpFrameTransport transport(client_socket);
-
+// 处理完整请求帧并生成响应帧，不执行网络收发
+std::string RpcServer::handleRequest(const std::string& frame) {
     // 解码 RPC 请求帧
     RpcRequest rpc_request;
     auto status = protocol_codec::decode(frame, rpc_request);
     if (!status.ok()) {
-        return;
+        return {};
     }
 
     // 读取目标服务和方法
@@ -341,9 +463,7 @@ void RpcServer::handleClient(TcpSocket client_socket, std::string frame) {
     // 查找目标服务
     const auto service_it = services_.find(service_name);
     if (service_it == services_.end()) {
-        const auto err = "service not found: " + service_name;
-        sendErrorResponse(transport, err);
-        return;
+        return encodeErrorResponse("service not found: " + service_name);
     }
 
     // 查找目标方法
@@ -351,9 +471,7 @@ void RpcServer::handleClient(TcpSocket client_socket, std::string frame) {
     const auto* method =
         service->GetDescriptor()->FindMethodByName(method_name);
     if (method == nullptr) {
-        const auto err = "method not found: " + method_name;
-        sendErrorResponse(transport, err);
-        return;
+        return encodeErrorResponse("method not found: " + method_name);
     }
 
     // 创建 protobuf 请求和响应对象
@@ -364,9 +482,7 @@ void RpcServer::handleClient(TcpSocket client_socket, std::string frame) {
 
     // 解析 protobuf 请求对象
     if (!request->ParseFromString(rpc_request.body)) {
-        std::string err = "parse request body failed";
-        sendErrorResponse(transport, err);
-        return;
+        return encodeErrorResponse("parse request body failed");
     }
 
     // 同步调用业务方法
@@ -379,12 +495,13 @@ void RpcServer::handleClient(TcpSocket client_socket, std::string frame) {
     // 序列化 protobuf 响应对象
     std::string response_body;
     if (!response->SerializeToString(&response_body)) {
-        sendErrorResponse(transport, "serialize response failed");
-        return;
+        return encodeErrorResponse("serialize response failed");
     }
 
-    // 回写 RPC 响应消息
-    sendSuccessResponse(transport, response_body);
+    // 构造并编码成功响应
+    RpcResponse rpc_response;
+    rpc_response.body = std::move(response_body);
+    return encodeRpcResponse(rpc_response);
 }
 
 } // namespace tinyrpc

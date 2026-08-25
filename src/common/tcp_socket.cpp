@@ -127,6 +127,14 @@ bool TcpSocket::sendAll(const char* data, size_t len) {
     return true;
 }
 
+// 执行一次 send，不循环等待全部数据发送完成
+ssize_t TcpSocket::sendSome(const char* data, size_t len) {
+    if (fd_ < 0) {
+        return -1;
+    }
+    return send(fd_, data, len, MSG_NOSIGNAL);
+}
+
 // 执行一次 recv，不循环等待指定长度
 ssize_t TcpSocket::recvSome(char* data, size_t len) {
     if (fd_ < 0) {
