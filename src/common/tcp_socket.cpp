@@ -1,6 +1,7 @@
 #include <tinyrpc/common/tcp_socket.h>
 
 #include <arpa/inet.h>
+#include <fcntl.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <sys/time.h>
@@ -80,6 +81,28 @@ bool TcpSocket::setTimeout(int timeout_ms) {
            setsockopt(fd_, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv)) == 0;
 }
 
+// 通过文件状态标志切换阻塞模式
+bool TcpSocket::setNonBlocking(bool enabled) {
+    if (fd_ < 0) {
+        return false;
+    }
+
+    // 保留已有标志，只修改 O_NONBLOCK
+    const auto flags = fcntl(fd_, F_GETFL, 0);
+    if (flags < 0) {
+        return false;
+    }
+
+    const auto updated_flags = enabled ? (flags | O_NONBLOCK)
+                                       : (flags & ~O_NONBLOCK);
+    return fcntl(fd_, F_SETFL, updated_flags) == 0;
+}
+
+// 返回借用的文件描述符，关闭操作仍由 TcpSocket 负责
+int TcpSocket::fd() const noexcept {
+    return fd_;
+}
+
 bool TcpSocket::sendAll(const std::string& data) {
     // 转给 buffer 版本发送
     return sendAll(data.data(), data.size());
@@ -102,6 +125,14 @@ bool TcpSocket::sendAll(const char* data, size_t len) {
     }
 
     return true;
+}
+
+// 执行一次 recv，不循环等待指定长度
+ssize_t TcpSocket::recvSome(char* data, size_t len) {
+    if (fd_ < 0) {
+        return -1;
+    }
+    return recv(fd_, data, len, 0);
 }
 
 bool TcpSocket::recvAll(char* data, size_t len) {

@@ -92,4 +92,9 @@ std::optional<TcpSocket> TcpListener::accept() const {
     return client_socket;
 }
 
+// 返回借用的文件描述符，关闭操作仍由 TcpListener 负责
+int TcpListener::fd() const noexcept {
+    return fd_;
+}
+
 } // namespace tinyrpc

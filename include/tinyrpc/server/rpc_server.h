@@ -32,8 +32,8 @@ public:
     void run();
 
 private:
-    // 处理单个客户端连接
-    void handleClient(TcpSocket client_socket);
+    // 在线程池中处理完整请求帧并回写响应
+    void handleClient(TcpSocket client_socket, std::string frame);
 
 private:
     // 按服务全名保存业务实现，RpcServer 不拥有这些对象

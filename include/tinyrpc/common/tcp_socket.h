@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <sys/types.h>
 
 namespace tinyrpc {
 
@@ -29,9 +30,18 @@ public:
     // 设置收发超时
     bool setTimeout(int timeout_ms = kDefaultTimeoutMs);
 
+    // 设置阻塞或非阻塞模式
+    bool setNonBlocking(bool enabled = true);
+
+    // 获取底层文件描述符，不转移所有权
+    int fd() const noexcept;
+
     // 发送全部数据
     bool sendAll(const std::string& data);
     bool sendAll(const char* data, size_t len);
+
+    // 接收当前可读的数据，返回值沿用 recv 语义
+    ssize_t recvSome(char* data, size_t len);
 
     // 接收指定长度的数据
     bool recvAll(char* data, size_t len);

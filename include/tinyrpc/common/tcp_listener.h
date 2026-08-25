@@ -26,6 +26,9 @@ public:
     // 接收客户端连接并设置默认收发超时
     std::optional<TcpSocket> accept() const;
 
+    // 获取底层文件描述符，不转移所有权
+    int fd() const noexcept;
+
 private:
     explicit TcpListener(int fd) noexcept;
 
