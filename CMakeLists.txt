@@ -93,6 +93,16 @@ target_link_libraries(tinyrpc_registry
         tinyrpc_lib
 )
 
+add_executable(rpc_benchmark
+    benchmarks/rpc_benchmark.cpp
+)
+
+target_link_libraries(rpc_benchmark
+    PRIVATE
+        tinyrpc_lib
+        calculator_proto
+)
+
 if(BUILD_TESTING)
     add_executable(protocol_codec_test
         tests/protocol_codec_test.cpp
@@ -127,4 +137,16 @@ if(BUILD_TESTING)
     )
 
     add_test(NAME service_lifecycle_test COMMAND service_lifecycle_test)
+
+    add_executable(rpc_integration_test
+        tests/rpc_integration_test.cpp
+    )
+
+    target_link_libraries(rpc_integration_test
+        PRIVATE
+            tinyrpc_lib
+            calculator_proto
+    )
+
+    add_test(NAME rpc_integration_test COMMAND rpc_integration_test)
 endif()
