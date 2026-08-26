@@ -88,6 +88,12 @@ cmake --build build -j
 ./build/calculator_client
 ```
 
+注册中心默认监听 `127.0.0.1:9000`，也可以通过命令行指定监听地址：
+
+```bash
+./build/tinyrpc_registry 0.0.0.0 9000
+```
+
 客户端可以配置连接池和超时：
 
 ```cpp
