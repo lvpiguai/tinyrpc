@@ -29,6 +29,7 @@ public:
     void stop();
 
 private:
+    // 保存服务实例地址及最近一次心跳时间
     struct ServiceInstance {
         Endpoint endpoint;
         std::chrono::steady_clock::time_point last_heartbeat;

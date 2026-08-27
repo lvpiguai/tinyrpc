@@ -16,17 +16,32 @@
 
 namespace tinyrpc {
 
+// 配置直连或注册中心寻址方式
 RpcChannel::RpcChannel(Mode mode, Endpoint endpoint)
     : mode_(mode), endpoint_(std::move(endpoint)) {}
 
+// 创建一条已被当前调用占用的池化连接
 RpcChannel::PooledConnection::PooledConnection(
     TcpSocket socket_value,
-    std::string service_name_value,
     Endpoint endpoint_value)
     : socket(std::move(socket_value)),
-      service_name(std::move(service_name_value)),
       endpoint(std::move(endpoint_value)) {}
 
+// 首次调用时绑定服务，后续调用验证服务是否一致
+std::optional<std::string> RpcChannel::bindOrValidateService(
+    const std::string& service_name) {
+    std::lock_guard<std::mutex> lock(pool_mutex_);
+    if (service_name_.empty()) {
+        service_name_ = service_name;
+        return std::nullopt;
+    }
+    if (service_name_ != service_name) {
+        return "rpc channel is already bound to service: " + service_name_;
+    }
+    return std::nullopt;
+}
+
+// 设置连接池容量并唤醒可能等待扩容的调用
 void RpcChannel::setMaxConnections(size_t max_connections) {
     {
         std::lock_guard<std::mutex> lock(pool_mutex_);
@@ -35,6 +50,7 @@ void RpcChannel::setMaxConnections(size_t max_connections) {
     pool_cv_.notify_all();
 }
 
+// 更新后续网络操作及已有连接的超时时间
 void RpcChannel::setTimeout(int timeout_ms) {
     std::lock_guard<std::mutex> lock(pool_mutex_);
     timeout_ms_ = std::max(1, timeout_ms);
@@ -45,120 +61,107 @@ void RpcChannel::setTimeout(int timeout_ms) {
     }
 }
 
-// 返回本次建连的候选端点，注册模式从轮询位置开始排列
-std::vector<Endpoint> RpcChannel::findServiceEndpoints(
-    const std::string& service_name,
-    int timeout_ms) {
-    // 使用直连服务端地址
+// 获取服务端点
+std::vector<Endpoint> RpcChannel::getServiceEndpoints(int timeout_ms) {
+    // 直连
     if (mode_ == Mode::Direct) {
         return {endpoint_};
     }
 
-    // 获取全部服务实例，由客户端选择本次连接的目标
+    // 服务发现
     RegistryClient registry(endpoint_, timeout_ms);
-    const auto endpoints = registry.discoverServiceEndpoints(service_name);
+    auto endpoints = registry.discoverServiceEndpoints(service_name_);
     if (endpoints.empty()) {
         return {};
     }
 
-    // 每个服务独立维护轮询起点，并保留其余实例作为建连备选
+    // 更新轮询位置
     size_t start_index = 0;
     {
         std::lock_guard<std::mutex> lock(pool_mutex_);
-        auto& next_index = next_endpoint_indices_[service_name];
-        start_index = next_index % endpoints.size();
-        next_index = (next_index + 1) % endpoints.size();
+        start_index = next_endpoint_index_ % endpoints.size();
+        next_endpoint_index_ = (next_endpoint_index_ + 1) % endpoints.size();
     }
 
-    std::vector<Endpoint> ordered_endpoints;
-    ordered_endpoints.reserve(endpoints.size());
-    for (size_t i = 0; i < endpoints.size(); ++i) {
-        ordered_endpoints.push_back(
-            endpoints[(start_index + i) % endpoints.size()]);
+    // 调整尝试顺序
+    std::rotate(endpoints.begin(),
+                endpoints.begin() + start_index,
+                endpoints.end());
+    return endpoints;
+}
+
+// 创建 TCP 连接
+RpcChannel::ConnectionPtr RpcChannel::createConnection(int timeout_ms) {
+    const auto endpoints = getServiceEndpoints(timeout_ms);
+
+    // 依次尝试建连
+    for (const auto& endpoint : endpoints) {
+        auto socket = TcpSocket::connect(endpoint, timeout_ms);
+        if (socket) {
+            return std::make_shared<PooledConnection>(
+                std::move(*socket), endpoint);
+        }
     }
-    return ordered_endpoints;
+    return nullptr;
 }
 
 // 获取空闲连接；达到上限时等待其他调用归还连接
-RpcChannel::ConnectionPtr RpcChannel::acquireConnection(
-    const std::string& service_name) {
+RpcChannel::ConnectionPtr RpcChannel::acquireConnection() {
+    // 锁定连接池
     std::unique_lock<std::mutex> lock(pool_mutex_);
 
+    // 唤醒后重新检查
     while (true) {
-        // 直连模式下所有服务共用目标地址；注册模式要求服务名相同
+        // 复用空闲连接
         const auto available = std::find_if(
             connections_.begin(), connections_.end(),
-            [&](const ConnectionPtr& connection) {
-                const auto matches_service =
-                    mode_ == Mode::Direct ||
-                    connection->service_name == service_name;
-                return matches_service && !connection->in_use;
+            [](const ConnectionPtr& connection) {
+                return !connection->in_use;
             });
         if (available != connections_.end()) {
             (*available)->in_use = true;
             return *available;
         }
 
-        // 注册模式下连接池已满时，可淘汰其他服务的空闲连接
+        // 池满则等待
         if (connections_.size() + connecting_count_ >= max_connections_) {
-            const auto replaceable = std::find_if(
-                connections_.begin(), connections_.end(),
-                [&](const ConnectionPtr& connection) {
-                    return !connection->in_use &&
-                           mode_ == Mode::Registry &&
-                           connection->service_name != service_name;
-                });
-            if (replaceable != connections_.end()) {
-                connections_.erase(replaceable);
-                continue;
-            }
-
             pool_cv_.wait(lock);
             continue;
         }
 
-        // 先预留连接名额，再释放锁执行可能阻塞的服务发现和 connect
+        // 预留建连名额
         const auto timeout_ms = timeout_ms_;
         ++connecting_count_;
         lock.unlock();
 
-        const auto target_endpoints = findServiceEndpoints(service_name,
-                                                           timeout_ms);
-        std::optional<TcpSocket> socket;
-        std::optional<Endpoint> connected_endpoint;
-        // 只在发送请求前尝试其他实例，不重放已经发送的 RPC
-        for (const auto& target_endpoint : target_endpoints) {
-            socket = TcpSocket::connect(target_endpoint.ip,
-                                        target_endpoint.port,
-                                        timeout_ms);
-            if (socket) {
-                connected_endpoint = target_endpoint;
-                break;
-            }
-        }
+        // 创建连接
+        auto connection = createConnection(timeout_ms);
 
+        // 释放建连名额
         lock.lock();
         --connecting_count_;
 
-        if (!socket || !connected_endpoint) {
+        // 处理建连失败
+        if (!connection) {
             lock.unlock();
-            pool_cv_.notify_all();
+            pool_cv_.notify_one();
             return nullptr;
         }
 
-        auto connection = std::make_shared<PooledConnection>(
-            std::move(*socket), service_name, std::move(*connected_endpoint));
+        // 加入连接池
         connections_.push_back(connection);
         lock.unlock();
-        pool_cv_.notify_all();
         return connection;
     }
 }
 
+// 归还或移除连接
 void RpcChannel::releaseConnection(const ConnectionPtr& connection,
-                                   bool healthy) {
+                                   bool reusable) {
     {
         std::lock_guard<std::mutex> lock(pool_mutex_);
+
+        // 查找连接
         const auto item = std::find(connections_.begin(),
                                     connections_.end(),
                                     connection);
@@ -166,23 +169,22 @@ void RpcChannel::releaseConnection(const ConnectionPtr& connection,
             return;
         }
 
-        // 网络异常时，同时清除同一实例的其他空闲旧连接
-        if (!healthy) {
-            const auto failed_endpoint = connection->endpoint;
+        // 清除失效实例的空闲连接
+        if (!reusable) {
             connections_.erase(
                 std::remove_if(
                     connections_.begin(), connections_.end(),
                     [&](const ConnectionPtr& candidate) {
-                        const auto same_endpoint =
-                            candidate->endpoint.ip == failed_endpoint.ip &&
-                            candidate->endpoint.port == failed_endpoint.port;
                         return candidate == connection ||
-                               (!candidate->in_use && same_endpoint);
+                               (!candidate->in_use &&
+                                candidate->endpoint == connection->endpoint);
                     }),
                 connections_.end());
         } else if (connections_.size() > max_connections_) {
+            // 收缩超额连接
             connections_.erase(item);
         } else {
+            // 标记为空闲
             connection->in_use = false;
         }
     }
@@ -205,6 +207,13 @@ void RpcChannel::CallMethod(const google::protobuf::MethodDescriptor* method,
         }
     };
 
+    // 绑定或校验当前 Channel 的逻辑服务
+    const auto& service_name = method->service()->full_name();
+    if (auto error = bindOrValidateService(service_name)) {
+        fail(*error);
+        return;
+    }
+
     // 序列化请求体
     std::string request_body;
     if (!request->SerializeToString(&request_body)) {
@@ -214,7 +223,7 @@ void RpcChannel::CallMethod(const google::protobuf::MethodDescriptor* method,
 
     // 构造 RPC 请求对象
     RpcRequest rpc_request{
-        method->service()->full_name(),
+        service_name,
         method->name(),
         std::move(request_body)
     };
@@ -228,7 +237,7 @@ void RpcChannel::CallMethod(const google::protobuf::MethodDescriptor* method,
     }
 
     // 从连接池独占一条连接
-    auto connection = acquireConnection(rpc_request.service_name);
+    auto connection = acquireConnection();
     if (!connection) {
         fail("connect or discover service failed");
         return;

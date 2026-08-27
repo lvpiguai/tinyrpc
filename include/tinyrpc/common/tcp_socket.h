@@ -1,5 +1,7 @@
 #pragma once
 
+#include <tinyrpc/common/endpoint.h>
+
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -26,8 +28,7 @@ public:
 
     // 在指定超时时间内连接远程服务器
     static std::optional<TcpSocket> connect(
-        const std::string& ip,
-        uint16_t port,
+        const Endpoint& endpoint,
         int timeout_ms = kDefaultTimeoutMs);
 
     // 设置收发超时

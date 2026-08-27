@@ -1,5 +1,6 @@
 #pragma once
 
+#include <tinyrpc/common/endpoint.h>
 #include <tinyrpc/common/tcp_socket.h>
 
 #include <cstdint>
@@ -20,8 +21,7 @@ public:
     TcpListener& operator=(TcpListener&& other) noexcept;
 
     // 绑定地址并开始监听
-    static std::optional<TcpListener> bind(const std::string& ip,
-                                           uint16_t port);
+    static std::optional<TcpListener> bind(const Endpoint& endpoint);
 
     // 接收客户端连接并设置默认收发超时
     std::optional<TcpSocket> accept() const;

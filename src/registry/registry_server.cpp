@@ -36,6 +36,7 @@ constexpr auto kHeartbeatTimeout = std::chrono::seconds(6);
 RegistryServer::RegistryServer(Endpoint listen_endpoint)
     : listen_endpoint_(std::move(listen_endpoint)) {}
 
+// 停止后台任务并等待清理线程退出
 RegistryServer::~RegistryServer() {
     stop();
     if (cleanup_thread_.joinable()) {
@@ -82,15 +83,15 @@ void RegistryServer::handleClient(TcpSocket client_socket) {
         if (iss >> service_name >> ip >> port) {
             std::lock_guard<std::mutex> lock(mutex_);
             auto& instances = service_endpoints_[service_name];
+            const Endpoint endpoint{ip, port};
             const auto instance = std::find_if(
                 instances.begin(), instances.end(),
                 [&](const ServiceInstance& value) {
-                    return value.endpoint.ip == ip &&
-                           value.endpoint.port == port;
+                    return value.endpoint == endpoint;
                 });
             const auto now = std::chrono::steady_clock::now();
             if (instance == instances.end()) {
-                instances.push_back({Endpoint{ip, port}, now});
+                instances.push_back({endpoint, now});
             } else {
                 instance->last_heartbeat = now;
             }
@@ -107,6 +108,7 @@ void RegistryServer::handleClient(TcpSocket client_socket) {
         uint16_t port = 0;
         if (iss >> service_name >> ip >> port) {
             std::lock_guard<std::mutex> lock(mutex_);
+            const Endpoint endpoint{ip, port};
             const auto service = service_endpoints_.find(service_name);
             if (service != service_endpoints_.end()) {
                 auto& instances = service->second;
@@ -114,8 +116,7 @@ void RegistryServer::handleClient(TcpSocket client_socket) {
                     std::remove_if(
                         instances.begin(), instances.end(),
                         [&](const ServiceInstance& instance) {
-                            return instance.endpoint.ip == ip &&
-                                   instance.endpoint.port == port;
+                            return instance.endpoint == endpoint;
                         }),
                     instances.end());
                 if (instances.empty()) {
@@ -193,8 +194,7 @@ void RegistryServer::run() {
     }
 
     // 创建注册中心监听 socket
-    auto listener = TcpListener::bind(listen_endpoint_.ip,
-                                      listen_endpoint_.port);
+    auto listener = TcpListener::bind(listen_endpoint_);
     if (!listener) {
         std::cerr << "create registry socket failed" << std::endl;
         return;

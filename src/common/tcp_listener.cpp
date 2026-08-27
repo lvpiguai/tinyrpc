@@ -31,8 +31,7 @@ TcpListener& TcpListener::operator=(TcpListener&& other) noexcept {
     return *this;
 }
 
-std::optional<TcpListener> TcpListener::bind(const std::string& ip,
-                                             uint16_t port) {
+std::optional<TcpListener> TcpListener::bind(const Endpoint& endpoint) {
     // 创建监听 socket
     const auto listen_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (listen_fd < 0) {
@@ -54,9 +53,9 @@ std::optional<TcpListener> TcpListener::bind(const std::string& ip,
     // 绑定监听地址
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
-    addr.sin_port = htons(port);
+    addr.sin_port = htons(endpoint.port);
 
-    if (inet_pton(AF_INET, ip.c_str(), &addr.sin_addr) <= 0) {
+    if (inet_pton(AF_INET, endpoint.ip.c_str(), &addr.sin_addr) <= 0) {
         return std::nullopt;
     }
 

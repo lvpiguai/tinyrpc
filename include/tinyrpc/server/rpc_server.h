@@ -36,7 +36,7 @@ public:
     // 启动 RPC 服务并监听指定地址
     void run();
 
-    // 请求服务端优雅停止
+    // 请求服务端停止并唤醒运行线程
     void stop();
 
 private:
@@ -53,8 +53,8 @@ private:
 private:
     // 按服务全名保存业务实现，RpcServer 不拥有这些对象
     std::unordered_map<std::string, google::protobuf::Service*> services_;
-    Endpoint listen_endpoint_;
-    std::optional<Endpoint> registry_endpoint_;
+    Endpoint listen_endpoint_;                    // 服务端监听地址
+    std::optional<Endpoint> registry_endpoint_;   // 可选注册中心地址
 
     // 线程池配置
     size_t worker_count_ = 0;
@@ -66,10 +66,10 @@ private:
     bool heartbeat_stopped_ = true;
     std::thread heartbeat_thread_;
 
-    // stop() 通过 completion_fd 唤醒 Reactor
+    // 控制服务停止并唤醒 Reactor
     std::atomic<bool> stop_requested_{false};
     std::mutex lifecycle_mutex_;
-    int completion_fd_ = -1;
+    int reactor_wakeup_fd_ = -1;
 };
 
 } // namespace tinyrpc

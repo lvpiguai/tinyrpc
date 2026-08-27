@@ -11,7 +11,6 @@
 #include <mutex>
 #include <optional>
 #include <string>
-#include <unordered_map>
 #include <vector>
 
 namespace tinyrpc {
@@ -34,6 +33,7 @@ public:
     // 设置服务发现、建连及单次收发的超时时间
     void setTimeout(int timeout_ms);
 
+    // 执行 Protobuf 生成代码转发的 RPC 调用
     void CallMethod(const google::protobuf::MethodDescriptor* method,
                     google::protobuf::RpcController* controller,
                     const google::protobuf::Message* request,
@@ -41,38 +41,46 @@ public:
                     google::protobuf::Closure* done) override;
 
 private:
+    // 保存池中连接及其目标实例和占用状态
     struct PooledConnection {
         PooledConnection(TcpSocket socket_value,
-                         std::string service_name_value,
                          Endpoint endpoint_value);
 
         TcpSocket socket;
-        std::string service_name;
         Endpoint endpoint;
         bool in_use = true;
     };
 
     using ConnectionPtr = std::shared_ptr<PooledConnection>;
 
-    std::vector<Endpoint> findServiceEndpoints(
-        const std::string& service_name,
-        int timeout_ms);
+    // 首次调用时绑定服务，后续调用验证服务是否一致
+    std::optional<std::string> bindOrValidateService(
+        const std::string& service_name);
+
+    // 获取服务端点
+    std::vector<Endpoint> getServiceEndpoints(int timeout_ms);
+
+    // 创建 TCP 连接
+    ConnectionPtr createConnection(int timeout_ms);
 
     // 获取一条空闲连接，连接池未满时创建新连接
-    ConnectionPtr acquireConnection(const std::string& service_name);
+    ConnectionPtr acquireConnection();
 
-    // 归还健康连接，或移除失效连接
-    void releaseConnection(const ConnectionPtr& connection, bool healthy);
+    // 归还可复用连接，或移除失效连接
+    void releaseConnection(const ConnectionPtr& connection, bool reusable);
 
-    Mode mode_;
-    Endpoint endpoint_;
+    Mode mode_;          // 直连或注册中心寻址
+    Endpoint endpoint_;  // 服务端或注册中心地址
+
+    // 首次调用后固定绑定的逻辑服务
+    std::string service_name_;
 
     // 连接池状态，单条连接同一时间只允许一个 RPC 使用
     std::vector<ConnectionPtr> connections_;
     size_t max_connections_ = 4;
     int timeout_ms_ = TcpSocket::kDefaultTimeoutMs;
-    size_t connecting_count_ = 0;
-    std::unordered_map<std::string, size_t> next_endpoint_indices_;
+    size_t connecting_count_ = 0;  // 已预留但尚未建成的连接数
+    size_t next_endpoint_index_ = 0;  // 下一次轮询的实例位置
     std::mutex pool_mutex_;
     std::condition_variable pool_cv_;
 };

@@ -14,18 +14,22 @@
 
 namespace tinyrpc {
 
+// 接管已有 socket 文件描述符
 TcpSocket::TcpSocket(int fd) noexcept
     : fd_(fd) {}
 
+// 关闭当前持有的 socket
 TcpSocket::~TcpSocket() {
     if (fd_ >= 0) {
         close(fd_);
     }
 }
 
+// 转移 socket 所有权
 TcpSocket::TcpSocket(TcpSocket&& other) noexcept
     : fd_(std::exchange(other.fd_, -1)) {}
 
+// 关闭旧 socket 后接管新所有权
 TcpSocket& TcpSocket::operator=(TcpSocket&& other) noexcept {
     if (this != &other) {
         if (fd_ >= 0) {
@@ -36,8 +40,8 @@ TcpSocket& TcpSocket::operator=(TcpSocket&& other) noexcept {
     return *this;
 }
 
-std::optional<TcpSocket> TcpSocket::connect(const std::string& ip,
-                                            uint16_t port,
+// 在指定时间内建立 TCP 连接
+std::optional<TcpSocket> TcpSocket::connect(const Endpoint& endpoint,
                                             int timeout_ms) {
     if (timeout_ms <= 0) {
         errno = EINVAL;
@@ -55,10 +59,10 @@ std::optional<TcpSocket> TcpSocket::connect(const std::string& ip,
     // 填写服务端地址
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
-    addr.sin_port = htons(port);
+    addr.sin_port = htons(endpoint.port);
 
     // 转换 IP 地址
-    if (inet_pton(AF_INET, ip.c_str(), &addr.sin_addr) <= 0) {
+    if (inet_pton(AF_INET, endpoint.ip.c_str(), &addr.sin_addr) <= 0) {
         return std::nullopt;
     }
 
@@ -126,6 +130,7 @@ std::optional<TcpSocket> TcpSocket::connect(const std::string& ip,
     return socket;
 }
 
+// 设置 socket 收发超时
 bool TcpSocket::setTimeout(int timeout_ms) {
     if (fd_ < 0) {
         return false;
@@ -165,11 +170,13 @@ int TcpSocket::fd() const noexcept {
     return fd_;
 }
 
+// 发送字符串中的全部数据
 bool TcpSocket::sendAll(const std::string& data) {
     // 转给 buffer 版本发送
     return sendAll(data.data(), data.size());
 }
 
+// 循环发送直到指定数据全部写入
 bool TcpSocket::sendAll(const char* data, size_t len) {
     if (fd_ < 0) {
         return false;
@@ -214,6 +221,7 @@ ssize_t TcpSocket::recvSome(char* data, size_t len) {
     return recv(fd_, data, len, 0);
 }
 
+// 循环接收直到填满指定缓冲区
 bool TcpSocket::recvAll(char* data, size_t len) {
     if (fd_ < 0) {
         return false;
@@ -248,6 +256,7 @@ bool TcpSocket::recvAll(std::string& out, size_t len) {
     return recvAll(out.data(), len);
 }
 
+// 按行接收注册中心文本协议
 std::optional<std::string> TcpSocket::recvLine(size_t max_size) {
     if (fd_ < 0) {
         return std::nullopt;

@@ -105,6 +105,9 @@ channel.setMaxConnections(8);
 channel.setTimeout(1000);
 ```
 
+`RpcChannel` 在首次调用时绑定对应的逻辑服务。不同 Service 应分别创建
+`RpcChannel`，每个 Channel 独立管理该服务的连接池。
+
 `RpcServer::run()` 是阻塞调用。控制线程可以调用 `stop()`，等待 `run()` 返回后再销毁服务对象。
 
 ## 测试

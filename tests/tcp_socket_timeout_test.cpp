@@ -10,6 +10,7 @@
 #include <sys/socket.h>
 
 int main() {
+    // 创建本地 socket 对模拟无响应的通信对端
     int fds[2] = {-1, -1};
     if (socketpair(AF_UNIX, SOCK_STREAM, 0, fds) < 0) {
         std::cerr << "create socket pair failed" << std::endl;
@@ -43,7 +44,8 @@ int main() {
 
     // 非法超时参数应在发起网络操作前直接失败
     errno = 0;
-    const auto invalid = tinyrpc::TcpSocket::connect("127.0.0.1", 1, 0);
+    const auto invalid = tinyrpc::TcpSocket::connect(
+        tinyrpc::Endpoint{"127.0.0.1", 1}, 0);
     if (invalid || errno != EINVAL) {
         std::cerr << "invalid connect timeout was not rejected" << std::endl;
         return 1;

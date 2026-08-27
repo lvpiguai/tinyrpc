@@ -25,6 +25,7 @@
 
 namespace {
 
+// 提供基准测试使用的轻量计算方法
 class CalculatorServiceImpl : public tinyrpc::CalculatorService {
 public:
     void Add(google::protobuf::RpcController*,
@@ -42,6 +43,7 @@ public:
     }
 };
 
+// 让内核分配一个当前可用的本地端口
 uint16_t findFreePort() {
     const auto fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) {
@@ -70,6 +72,7 @@ uint16_t findFreePort() {
     return port;
 }
 
+// 等待测试服务完成注册
 bool waitForService(tinyrpc::RegistryClient& registry,
                     const std::string& service_name) {
     for (int i = 0; i < 200; ++i) {
@@ -81,9 +84,10 @@ bool waitForService(tinyrpc::RegistryClient& registry,
     return false;
 }
 
+// 等待指定网络端点开始接受连接
 bool waitForEndpoint(const tinyrpc::Endpoint& endpoint) {
     for (int i = 0; i < 100; ++i) {
-        if (tinyrpc::TcpSocket::connect(endpoint.ip, endpoint.port, 50)) {
+        if (tinyrpc::TcpSocket::connect(endpoint, 50)) {
             return true;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
@@ -91,6 +95,7 @@ bool waitForEndpoint(const tinyrpc::Endpoint& endpoint) {
     return false;
 }
 
+// 获取已排序延迟样本的指定分位数
 long long percentile(const std::vector<long long>& values, double ratio) {
     const auto index = static_cast<std::size_t>(
         ratio * static_cast<double>(values.size() - 1));
@@ -100,10 +105,12 @@ long long percentile(const std::vector<long long>& values, double ratio) {
 } // namespace
 
 int main(int argc, char* argv[]) {
+    // 从命令行读取并发线程数和单线程调用次数
     const auto thread_count = argc > 1 ? std::max(1, std::atoi(argv[1])) : 8;
     const auto calls_per_thread =
         argc > 2 ? std::max(1, std::atoi(argv[2])) : 1000;
 
+    // 为注册中心和 RPC 服务分配不同端口
     const auto registry_port = findFreePort();
     auto service_port = findFreePort();
     while (service_port == registry_port) {
@@ -114,6 +121,7 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+    // 启动进程内注册中心
     const tinyrpc::Endpoint registry_endpoint{"127.0.0.1", registry_port};
     tinyrpc::RegistryServer registry_server(registry_endpoint);
     std::thread registry_thread([&]() { registry_server.run(); });
@@ -124,6 +132,7 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+    // 启动并注册基准测试服务
     CalculatorServiceImpl service;
     tinyrpc::RpcServer rpc_server(
         tinyrpc::Endpoint{"127.0.0.1", service_port});
@@ -143,6 +152,7 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+    // 按并发线程数配置客户端连接池
     tinyrpc::RpcChannel channel(tinyrpc::RpcChannel::Mode::Registry,
                                 registry_endpoint);
     channel.setMaxConnections(static_cast<std::size_t>(thread_count));
@@ -156,6 +166,7 @@ int main(int argc, char* argv[]) {
     std::atomic<bool> start{false};
     std::vector<std::thread> callers;
 
+    // 并发调用并记录每次请求延迟
     for (int thread_index = 0; thread_index < thread_count; ++thread_index) {
         callers.emplace_back([&, thread_index]() {
             ready_threads.fetch_add(1);
@@ -186,6 +197,7 @@ int main(int argc, char* argv[]) {
         });
     }
 
+    // 等待全部线程就绪后开始计时
     while (ready_threads.load() != thread_count) {
         std::this_thread::yield();
     }
@@ -198,11 +210,13 @@ int main(int argc, char* argv[]) {
         std::chrono::duration<double>(std::chrono::steady_clock::now() -
                                      benchmark_begin).count();
 
+    // 停止服务并回收后台线程
     rpc_server.stop();
     server_thread.join();
     registry_server.stop();
     registry_thread.join();
 
+    // 汇总吞吐量和延迟分位数
     std::sort(latencies.begin(), latencies.end());
     const auto qps = static_cast<double>(total_calls) / benchmark_elapsed;
     std::cout << "threads: " << thread_count << "\n"

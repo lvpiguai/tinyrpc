@@ -11,13 +11,16 @@
 
 namespace {
 
+// 未传参数时使用本地默认监听地址
 constexpr std::string_view kDefaultIp = "127.0.0.1";
 constexpr uint16_t kDefaultPort = 9000;
 
+// 输出注册中心命令行格式
 void printUsage(const char* program) {
     std::cerr << "Usage: " << program << " [ip port]" << std::endl;
 }
 
+// 解析并校验有效端口范围
 bool parsePort(std::string_view text, uint16_t& port) {
     unsigned int value = 0;
     const auto [ptr, error] =
@@ -31,6 +34,7 @@ bool parsePort(std::string_view text, uint16_t& port) {
     return true;
 }
 
+// 校验点分十进制 IPv4 地址
 bool isValidIpv4(const std::string& ip) {
     in_addr address{};
     return inet_pton(AF_INET, ip.c_str(), &address) == 1;
@@ -39,14 +43,17 @@ bool isValidIpv4(const std::string& ip) {
 }  // namespace
 
 int main(int argc, char* argv[]) {
+    // 初始化默认监听地址
     std::string ip{kDefaultIp};
     uint16_t port = kDefaultPort;
 
+    // 仅允许同时省略或同时传入 IP 和端口
     if (argc != 1 && argc != 3) {
         printUsage(argv[0]);
         return 1;
     }
 
+    // 使用命令行参数覆盖默认地址
     if (argc == 3) {
         ip = argv[1];
         if (!isValidIpv4(ip)) {

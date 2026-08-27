@@ -21,6 +21,7 @@ RegistryClient::RegistryClient(Endpoint registry_endpoint)
     : RegistryClient(std::move(registry_endpoint),
                      TcpSocket::kDefaultTimeoutMs) {}
 
+// 配置注册中心地址和网络超时
 RegistryClient::RegistryClient(Endpoint registry_endpoint, int timeout_ms)
     : registry_endpoint_(std::move(registry_endpoint)),
       timeout_ms_(timeout_ms) {}
@@ -30,9 +31,7 @@ bool RegistryClient::registerServiceEndpoint(
     const std::string& service_name,
     const Endpoint& service_endpoint) {
     // 连接注册中心
-    auto socket = TcpSocket::connect(registry_endpoint_.ip,
-                                     registry_endpoint_.port,
-                                     timeout_ms_);
+    auto socket = TcpSocket::connect(registry_endpoint_, timeout_ms_);
     if (!socket) {
         return false;
     }
@@ -54,9 +53,7 @@ bool RegistryClient::registerServiceEndpoint(
 bool RegistryClient::heartbeatServiceEndpoint(
     const std::string& service_name,
     const Endpoint& service_endpoint) {
-    auto socket = TcpSocket::connect(registry_endpoint_.ip,
-                                     registry_endpoint_.port,
-                                     timeout_ms_);
+    auto socket = TcpSocket::connect(registry_endpoint_, timeout_ms_);
     if (!socket) {
         return false;
     }
@@ -76,9 +73,7 @@ bool RegistryClient::heartbeatServiceEndpoint(
 bool RegistryClient::unregisterServiceEndpoint(
     const std::string& service_name,
     const Endpoint& service_endpoint) {
-    auto socket = TcpSocket::connect(registry_endpoint_.ip,
-                                     registry_endpoint_.port,
-                                     timeout_ms_);
+    auto socket = TcpSocket::connect(registry_endpoint_, timeout_ms_);
     if (!socket) {
         return false;
     }
@@ -98,9 +93,7 @@ bool RegistryClient::unregisterServiceEndpoint(
 std::vector<Endpoint> RegistryClient::discoverServiceEndpoints(
     const std::string& service_name) {
     // 连接注册中心
-    auto socket = TcpSocket::connect(registry_endpoint_.ip,
-                                     registry_endpoint_.port,
-                                     timeout_ms_);
+    auto socket = TcpSocket::connect(registry_endpoint_, timeout_ms_);
     if (!socket) {
         return {};
     }
