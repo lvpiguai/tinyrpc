@@ -46,93 +46,6 @@ constexpr std::size_t kReadBufferSize = 8192;
 // 心跳间隔小于注册中心的超时时间，避免正常实例被摘除
 constexpr auto kHeartbeatInterval = std::chrono::seconds(2);
 
-// 保存尚未形成完整请求帧的连接及其读取状态
-struct ClientConnection {
-    explicit ClientConnection(TcpSocket value)
-        : socket(std::move(value)) {}
-
-    TcpSocket socket;                         // 连接所有权
-    std::string input;                        // 已读取但尚未处理的数据
-    std::optional<std::size_t> frame_size;    // 长度字段解析后的帧大小
-    std::string output;                       // 等待发送的传输层数据
-    std::size_t sent_size = 0;                // 已发送字节数
-
-    // 响应完成后清理状态，以接收同一连接的下一个请求
-    void reset() {
-        input.clear();
-        frame_size.reset();
-        output.clear();
-        sent_size = 0;
-    }
-};
-
-// 工作线程完成业务处理后交给 Reactor 的结果
-struct CompletedResponse {
-    int client_fd;
-    std::string frame;
-};
-
-// Reactor 尝试读取一帧后的结果
-enum class ReadFrameResult {
-    Incomplete, // 当前数据不足，继续等待 EPOLLIN
-    Complete,   // 已获得完整帧，可以提交线程池
-    Closed      // 对端关闭、网络错误或帧长度非法
-};
-
-// 非阻塞读取当前已有数据，并尝试组装一个完整帧
-ReadFrameResult readAvailableFrame(ClientConnection& client,
-                                   std::string& frame) {
-    std::array<char, kReadBufferSize> buffer{};
-
-    while (true) {
-        // 非阻塞 socket 只读取内核缓冲区中当前已有的数据
-        const auto received = client.socket.recvSome(buffer.data(),
-                                                     buffer.size());
-        if (received > 0) {
-            // 本次数据可能只是半包，先追加到连接缓冲区
-            client.input.append(buffer.data(),
-                                static_cast<std::size_t>(received));
-
-            // 收齐 4 字节长度字段后，得到完整帧应有的大小
-            if (!client.frame_size &&
-                client.input.size() >= kFrameSizeFieldSize) {
-                uint32_t network_frame_size = 0;
-                std::memcpy(&network_frame_size,
-                            client.input.data(),
-                            kFrameSizeFieldSize);
-                client.frame_size = ntohl(network_frame_size);
-                if (*client.frame_size > TcpFrameTransport::kMaxFrameSize) {
-                    return ReadFrameResult::Closed;
-                }
-            }
-
-            // 长度字段和完整帧都已到达时提取 RPC 帧
-            if (client.frame_size &&
-                client.input.size() >=
-                    kFrameSizeFieldSize + *client.frame_size) {
-                frame = client.input.substr(kFrameSizeFieldSize,
-                                            *client.frame_size);
-                return ReadFrameResult::Complete;
-            }
-            continue;
-        }
-
-        // recv 返回 0 表示对端已关闭连接
-        if (received == 0) {
-            return ReadFrameResult::Closed;
-        }
-        // 被信号中断时重新尝试读取
-        if (errno == EINTR) {
-            continue;
-        }
-        // EAGAIN 表示当前数据已读完，并非网络错误
-        if (errno == EAGAIN || errno == EWOULDBLOCK) {
-            return ReadFrameResult::Incomplete;
-        }
-        return ReadFrameResult::Closed;
-    }
-}
-
 // 编码 RPC 响应帧，失败时返回空字符串
 std::string encodeRpcResponse(const RpcResponse& response) {
     std::string frame;
@@ -163,6 +76,419 @@ std::string buildTransportData(const std::string& frame) {
 
 } // namespace
 
+RpcServer::ClientConnection::ClientConnection(TcpSocket value)
+    : socket(std::move(value)) {}
+
+// 清理连接状态以接收下一个请求
+void RpcServer::ClientConnection::reset() {
+    input.clear();
+    frame_size.reset();
+    output.clear();
+    sent_size = 0;
+}
+
+// 非阻塞读取并组装完整请求帧
+RpcServer::ReadFrameResult RpcServer::readAvailableFrame(
+    ClientConnection& connection,
+    std::string& frame) {
+    std::array<char, kReadBufferSize> buffer{};
+
+    while (true) {
+        const auto received =
+            connection.socket.recvSome(buffer.data(), buffer.size());
+        if (received > 0) {
+            // 保存本次读取的数据
+            connection.input.append(buffer.data(),
+                                    static_cast<std::size_t>(received));
+
+            // 解析帧长度
+            if (!connection.frame_size &&
+                connection.input.size() >= kFrameSizeFieldSize) {
+                uint32_t network_frame_size = 0;
+                std::memcpy(&network_frame_size,
+                            connection.input.data(),
+                            kFrameSizeFieldSize);
+                connection.frame_size = ntohl(network_frame_size);
+                if (*connection.frame_size >
+                    TcpFrameTransport::kMaxFrameSize) {
+                    return ReadFrameResult::Closed;
+                }
+            }
+
+            // 提取完整请求帧
+            if (connection.frame_size &&
+                connection.input.size() >=
+                    kFrameSizeFieldSize + *connection.frame_size) {
+                frame = connection.input.substr(kFrameSizeFieldSize,
+                                                *connection.frame_size);
+                return ReadFrameResult::Complete;
+            }
+            continue;
+        }
+
+        if (received == 0) {
+            return ReadFrameResult::Closed;
+        }
+        if (errno == EINTR) {
+            continue;
+        }
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            return ReadFrameResult::Incomplete;
+        }
+        return ReadFrameResult::Closed;
+    }
+}
+
+// 初始化服务端运行资源
+bool RpcServer::initialize() {
+    cleanup();
+    stop_requested_.store(false);
+
+    // 创建监听 socket
+    listener_ = TcpListener::bind(listen_endpoint_);
+    if (!listener_) {
+        std::cerr << "create server socket failed" << std::endl;
+        return false;
+    }
+
+    // 创建 epoll
+    epoll_fd_ = epoll_create1(EPOLL_CLOEXEC);
+    if (epoll_fd_ < 0) {
+        std::cerr << "create epoll failed" << std::endl;
+        cleanup();
+        return false;
+    }
+
+    // 将监听 socket 加入 epoll
+    epoll_event listen_event{};
+    listen_event.events = EPOLLIN;
+    listen_event.data.fd = listener_->fd();
+    if (epoll_ctl(epoll_fd_,
+                  EPOLL_CTL_ADD,
+                  listener_->fd(),
+                  &listen_event) < 0) {
+        std::cerr << "add listener to epoll failed" << std::endl;
+        cleanup();
+        return false;
+    }
+
+    // 创建用于唤醒 Reactor 的 eventfd
+    {
+        std::lock_guard<std::mutex> lock(reactor_wakeup_mutex_);
+        reactor_wakeup_fd_ = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+    }
+    if (reactor_wakeup_fd_ < 0) {
+        std::cerr << "create reactor wakeup eventfd failed" << std::endl;
+        cleanup();
+        return false;
+    }
+
+    // 将唤醒事件加入 epoll
+    epoll_event wakeup_event{};
+    wakeup_event.events = EPOLLIN;
+    wakeup_event.data.fd = reactor_wakeup_fd_;
+    if (epoll_ctl(epoll_fd_,
+                  EPOLL_CTL_ADD,
+                  reactor_wakeup_fd_,
+                  &wakeup_event) < 0) {
+        std::cerr << "add reactor wakeup eventfd to epoll failed" << std::endl;
+        cleanup();
+        return false;
+    }
+
+    // 确定工作线程数
+    auto worker_count = worker_count_;
+    if (worker_count == 0) {
+        worker_count = std::thread::hardware_concurrency();
+        if (worker_count == 0) {
+            worker_count = 4;
+        }
+    }
+
+    // 创建请求处理线程池
+    thread_pool_ =
+        std::make_unique<ThreadPool>(worker_count, max_queue_size_);
+    return true;
+}
+
+// 唤醒 Reactor 事件循环
+void RpcServer::wakeupReactor() {
+    std::lock_guard<std::mutex> lock(reactor_wakeup_mutex_);
+    if (reactor_wakeup_fd_ < 0) {
+        return;
+    }
+
+    uint64_t one = 1;
+    while (write(reactor_wakeup_fd_, &one, sizeof(one)) < 0 &&
+           errno == EINTR) {
+    }
+}
+
+// 处理工作线程完成的响应
+void RpcServer::handleCompletedResponses() {
+    // 取出本轮完成响应
+    std::queue<CompletedResponse> ready_responses;
+    {
+        std::lock_guard<std::mutex> lock(completed_mutex_);
+        ready_responses.swap(completed_responses_);
+    }
+
+    // 将响应关联到对应连接
+    while (!ready_responses.empty()) {
+        auto completed = std::move(ready_responses.front());
+        ready_responses.pop();
+
+        // 忽略已经关闭的连接
+        const auto connection = connections_.find(completed.client_fd);
+        if (connection == connections_.end()) {
+            continue;
+        }
+
+        // 响应生成失败时关闭连接
+        if (completed.frame.empty()) {
+            connections_.erase(connection);
+            continue;
+        }
+
+        // 保存等待发送的响应数据
+        connection->second.output = buildTransportData(completed.frame);
+        connection->second.sent_size = 0;
+
+        // 等待连接可写
+        epoll_event write_event{};
+        write_event.events = EPOLLOUT | EPOLLRDHUP;
+        write_event.data.fd = completed.client_fd;
+        if (epoll_ctl(epoll_fd_,
+                      EPOLL_CTL_ADD,
+                      completed.client_fd,
+                      &write_event) < 0) {
+            connections_.erase(connection);
+        }
+    }
+}
+
+// 接收并监听客户端连接
+void RpcServer::acceptConnection() {
+    auto client_socket = listener_->accept();
+    if (!client_socket) {
+        std::cerr << "accept client failed" << std::endl;
+        return;
+    }
+    if (!client_socket->setNonBlocking()) {
+        return;
+    }
+
+    // 保存客户端连接
+    const auto client_fd = client_socket->fd();
+    connections_.emplace(client_fd,
+                         ClientConnection(std::move(*client_socket)));
+
+    // 将客户端连接加入 epoll
+    epoll_event client_event{};
+    client_event.events = EPOLLIN | EPOLLRDHUP;
+    client_event.data.fd = client_fd;
+    if (epoll_ctl(epoll_fd_,
+                  EPOLL_CTL_ADD,
+                  client_fd,
+                  &client_event) < 0) {
+        connections_.erase(client_fd);
+    }
+}
+
+// 分发客户端事件
+void RpcServer::handleClientEvent(int client_fd, uint32_t events) {
+    if (connections_.find(client_fd) == connections_.end()) {
+        return;
+    }
+
+    // 关闭异常或断开的连接
+    if ((events & (EPOLLERR | EPOLLHUP)) != 0 ||
+        ((events & EPOLLIN) == 0 && (events & EPOLLRDHUP) != 0)) {
+        closeConnection(client_fd);
+        return;
+    }
+
+    if ((events & EPOLLIN) != 0) {
+        handleReadable(client_fd);
+        return;
+    }
+
+    if ((events & EPOLLOUT) != 0) {
+        handleWritable(client_fd);
+    }
+}
+
+// 读取请求并提交线程池
+void RpcServer::handleReadable(int client_fd) {
+    const auto connection = connections_.find(client_fd);
+    if (connection == connections_.end()) {
+        return;
+    }
+
+    // 读取完整请求帧
+    std::string frame;
+    const auto read_result = readAvailableFrame(connection->second, frame);
+    if (read_result == ReadFrameResult::Incomplete) {
+        return;
+    }
+    if (read_result == ReadFrameResult::Closed) {
+        closeConnection(client_fd);
+        return;
+    }
+
+    // 请求处理期间暂停监听连接
+    epoll_ctl(epoll_fd_, EPOLL_CTL_DEL, client_fd, nullptr);
+
+    // 在线程池中处理请求
+    const auto submitted = thread_pool_->submit(
+        [this, client_fd, frame = std::move(frame)]() mutable {
+            auto response_frame = handleRequest(frame);
+            {
+                std::lock_guard<std::mutex> lock(completed_mutex_);
+                completed_responses_.push(
+                    {client_fd, std::move(response_frame)});
+            }
+            wakeupReactor();
+        });
+    if (!submitted) {
+        std::cerr << "rpc thread pool queue is full, reject connection"
+                  << std::endl;
+        connections_.erase(connection);
+    }
+}
+
+// 向客户端发送响应
+void RpcServer::handleWritable(int client_fd) {
+    const auto connection = connections_.find(client_fd);
+    if (connection == connections_.end()) {
+        return;
+    }
+
+    auto& client = connection->second;
+    while (client.sent_size < client.output.size()) {
+        const auto sent = client.socket.sendSome(
+            client.output.data() + client.sent_size,
+            client.output.size() - client.sent_size);
+        if (sent > 0) {
+            client.sent_size += static_cast<std::size_t>(sent);
+            continue;
+        }
+        if (sent < 0 && errno == EINTR) {
+            continue;
+        }
+        if (sent < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            return;
+        }
+
+        closeConnection(client_fd);
+        return;
+    }
+
+    // 继续等待下一个请求
+    client.reset();
+    epoll_event read_event{};
+    read_event.events = EPOLLIN | EPOLLRDHUP;
+    read_event.data.fd = client_fd;
+    if (epoll_ctl(epoll_fd_,
+                  EPOLL_CTL_MOD,
+                  client_fd,
+                  &read_event) < 0) {
+        connections_.erase(connection);
+    }
+}
+
+// 关闭客户端连接
+void RpcServer::closeConnection(int client_fd) {
+    epoll_ctl(epoll_fd_, EPOLL_CTL_DEL, client_fd, nullptr);
+    connections_.erase(client_fd);
+}
+
+// 运行 Reactor 事件循环
+void RpcServer::eventLoop() {
+    std::array<epoll_event, kMaxEpollEvents> events{};
+
+    while (!stop_requested_.load()) {
+        // 等待文件描述符就绪
+        const auto event_count =
+            epoll_wait(epoll_fd_,
+                       events.data(),
+                       static_cast<int>(events.size()),
+                       -1);
+        if (event_count < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            std::cerr << "epoll_wait failed: " << std::strerror(errno)
+                      << std::endl;
+            stop_requested_.store(true);
+            break;
+        }
+
+        // 分发本轮就绪事件
+        for (int i = 0; i < event_count; ++i) {
+            const auto ready_fd = events[i].data.fd;
+            const auto ready_events = events[i].events;
+
+            // 处理 Reactor 唤醒事件
+            if (ready_fd == reactor_wakeup_fd_) {
+                // 清空 eventfd 唤醒计数
+                uint64_t wakeup_count = 0;
+                while (read(reactor_wakeup_fd_,
+                            &wakeup_count,
+                            sizeof(wakeup_count)) < 0 &&
+                       errno == EINTR) {
+                }
+
+                // 收到停止请求时退出事件循环
+                if (stop_requested_.load()) {
+                    break;
+                }
+                handleCompletedResponses();
+                continue;
+            }
+
+            // 接收客户端连接
+            if (ready_fd == listener_->fd()) {
+                acceptConnection();
+                continue;
+            }
+
+            // 处理客户端读写事件
+            handleClientEvent(ready_fd, ready_events);
+        }
+    }
+}
+
+// 清理服务端运行资源
+void RpcServer::cleanup() {
+    // 等待请求处理结束
+    thread_pool_.reset();
+    connections_.clear();
+    listener_.reset();
+
+    // 清空未发送响应
+    {
+        std::lock_guard<std::mutex> lock(completed_mutex_);
+        std::queue<CompletedResponse> empty;
+        completed_responses_.swap(empty);
+    }
+
+    // 关闭 Reactor 唤醒事件
+    {
+        std::lock_guard<std::mutex> lock(reactor_wakeup_mutex_);
+        if (reactor_wakeup_fd_ >= 0) {
+            close(reactor_wakeup_fd_);
+            reactor_wakeup_fd_ = -1;
+        }
+    }
+
+    // 关闭 epoll
+    if (epoll_fd_ >= 0) {
+        close(epoll_fd_);
+        epoll_fd_ = -1;
+    }
+}
+
 // 配置服务端监听地址
 RpcServer::RpcServer(Endpoint listen_endpoint)
     : listen_endpoint_(std::move(listen_endpoint)) {}
@@ -170,6 +496,7 @@ RpcServer::RpcServer(Endpoint listen_endpoint)
 // 析构前触发服务端停止流程
 RpcServer::~RpcServer() {
     stop();
+    cleanup();
 }
 
 // 注册本地业务服务
@@ -212,8 +539,7 @@ void RpcServer::startHeartbeat() {
             // 网络操作可能阻塞，执行时不持有心跳状态锁
             lock.unlock();
             for (const auto& item : services_) {
-                if (!registry.heartbeatServiceEndpoint(item.first,
-                                                       listen_endpoint_)) {
+                if (!registry.sendHeartbeat(item.first, listen_endpoint_)) {
                     std::cerr << "heartbeat service failed: " << item.first
                               << std::endl;
                 }
@@ -232,6 +558,21 @@ void RpcServer::stopHeartbeat() {
     heartbeat_cv_.notify_all();
     if (heartbeat_thread_.joinable()) {
         heartbeat_thread_.join();
+    }
+}
+
+// 向注册中心发布服务
+void RpcServer::registerServices() {
+    if (!registry_endpoint_) {
+        return;
+    }
+
+    RegistryClient registry(*registry_endpoint_);
+    for (const auto& item : services_) {
+        if (!registry.registerServiceEndpoint(item.first, listen_endpoint_)) {
+            std::cerr << "register service to registry failed: " << item.first
+                      << std::endl;
+        }
     }
 }
 
@@ -255,325 +596,20 @@ void RpcServer::unregisterServices() {
 void RpcServer::stop() {
     stop_requested_.store(true);
     stopHeartbeat();
-
-    std::lock_guard<std::mutex> lock(lifecycle_mutex_);
-    if (reactor_wakeup_fd_ >= 0) {
-        uint64_t one = 1;
-        while (write(reactor_wakeup_fd_, &one, sizeof(one)) < 0 &&
-               errno == EINTR) {
-        }
-    }
+    wakeupReactor();
 }
 
 // 启动 RPC 服务端
 void RpcServer::run() {
-    stop_requested_.store(false);
-
-    // 创建监听 socket
-    auto listener = TcpListener::bind(listen_endpoint_);
-    if (!listener) {
-        std::cerr << "create server socket failed" << std::endl;
+    if (!initialize()) {
         return;
     }
 
-    // 创建 epoll
-    const auto epoll_fd = epoll_create1(EPOLL_CLOEXEC);
-    if (epoll_fd < 0) {
-        std::cerr << "create epoll failed" << std::endl;
-        return;
-    }
-
-    // 将监听 socket 加入 epoll
-    const auto listen_fd = listener->fd();
-    epoll_event listen_event{};
-    listen_event.events = EPOLLIN;
-    listen_event.data.fd = listen_fd;
-    if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, listen_fd, &listen_event) < 0) {
-        std::cerr << "add listener to epoll failed" << std::endl;
-        close(epoll_fd);
-        return;
-    }
-
-    // 创建 Reactor 唤醒事件
-    const auto reactor_wakeup_fd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
-    if (reactor_wakeup_fd < 0) {
-        std::cerr << "create reactor wakeup eventfd failed" << std::endl;
-        close(epoll_fd);
-        return;
-    }
-
-    // 将唤醒事件加入 epoll
-    epoll_event wakeup_event{};
-    wakeup_event.events = EPOLLIN;
-    wakeup_event.data.fd = reactor_wakeup_fd;
-    if (epoll_ctl(epoll_fd,
-                  EPOLL_CTL_ADD,
-                  reactor_wakeup_fd,
-                  &wakeup_event) < 0) {
-        std::cerr << "add reactor wakeup eventfd to epoll failed" << std::endl;
-        close(reactor_wakeup_fd);
-        close(epoll_fd);
-        return;
-    }
-
-    {
-        std::lock_guard<std::mutex> lock(lifecycle_mutex_);
-        reactor_wakeup_fd_ = reactor_wakeup_fd;
-    }
-
-    // Reactor 线程持有尚未交给工作线程的客户端连接
-    std::unordered_map<int, ClientConnection> clients;
-
-    // 工作线程写入完成队列，Reactor 被 eventfd 唤醒后取出
-    std::mutex completed_mutex;
-    std::queue<CompletedResponse> completed_responses;
-
-    // 确定工作线程数
-    auto worker_count = worker_count_;
-    if (worker_count == 0) {
-        worker_count = std::thread::hardware_concurrency();
-        if (worker_count == 0) {
-            worker_count = 4;
-        }
-    }
-
-    // 创建请求处理线程池
-    auto thread_pool =
-        std::make_unique<ThreadPool>(worker_count, max_queue_size_);
-    std::array<epoll_event, kMaxEpollEvents> events{};
-
-    // 网络初始化成功后，发布当前服务端提供的全部服务
-    if (registry_endpoint_) {
-        RegistryClient registry(*registry_endpoint_);
-        for (const auto& item : services_) {
-            if (!registry.registerServiceEndpoint(item.first,
-                                                  listen_endpoint_)) {
-                std::cerr << "register service to registry failed: "
-                          << item.first << std::endl;
-            }
-        }
-    }
-
-    // 网络初始化完成后开始周期性续约服务实例
+    registerServices();
     startHeartbeat();
-
-    // 运行 Reactor 事件循环
-    while (!stop_requested_.load()) {
-        const auto event_count = epoll_wait(epoll_fd,
-                                            events.data(),
-                                            static_cast<int>(events.size()),
-                                            -1);
-        if (event_count < 0) {
-            if (errno == EINTR) {
-                continue;
-            }
-            std::cerr << "epoll_wait failed: " << std::strerror(errno)
-                      << std::endl;
-            stop_requested_.store(true);
-            break;
-        }
-
-        for (int i = 0; i < event_count; ++i) {
-            const auto ready_fd = events[i].data.fd;
-            const auto ready_events = events[i].events;
-
-            // 处理工作线程的完成通知
-            if (ready_fd == reactor_wakeup_fd) {
-                uint64_t completed_count = 0;
-                while (read(reactor_wakeup_fd,
-                            &completed_count,
-                            sizeof(completed_count)) < 0 &&
-                       errno == EINTR) {
-                }
-
-                if (stop_requested_.load()) {
-                    break;
-                }
-
-                std::queue<CompletedResponse> ready_responses;
-                {
-                    std::lock_guard<std::mutex> lock(completed_mutex);
-                    ready_responses.swap(completed_responses);
-                }
-
-                while (!ready_responses.empty()) {
-                    auto completed = std::move(ready_responses.front());
-                    ready_responses.pop();
-
-                    const auto completed_client =
-                        clients.find(completed.client_fd);
-                    if (completed_client == clients.end()) {
-                        continue;
-                    }
-                    if (completed.frame.empty()) {
-                        clients.erase(completed_client);
-                        continue;
-                    }
-
-                    completed_client->second.output =
-                        buildTransportData(completed.frame);
-                    completed_client->second.sent_size = 0;
-
-                    // 等待发送响应
-                    epoll_event write_event{};
-                    write_event.events = EPOLLOUT | EPOLLRDHUP;
-                    write_event.data.fd = completed.client_fd;
-                    if (epoll_ctl(epoll_fd,
-                                  EPOLL_CTL_ADD,
-                                  completed.client_fd,
-                                  &write_event) < 0) {
-                        clients.erase(completed_client);
-                    }
-                }
-                continue;
-            }
-
-            // 接收并监听新连接
-            if (ready_fd == listen_fd) {
-                auto client_socket = listener->accept();
-                if (!client_socket) {
-                    std::cerr << "accept client failed" << std::endl;
-                    continue;
-                }
-
-                if (!client_socket->setNonBlocking()) {
-                    continue;
-                }
-
-                const auto client_fd = client_socket->fd();
-                clients.emplace(client_fd,
-                                ClientConnection(std::move(*client_socket)));
-
-                epoll_event client_event{};
-                client_event.events = EPOLLIN | EPOLLRDHUP;
-                client_event.data.fd = client_fd;
-                if (epoll_ctl(epoll_fd,
-                              EPOLL_CTL_ADD,
-                              client_fd,
-                              &client_event) < 0) {
-                    clients.erase(client_fd);
-                }
-                continue;
-            }
-
-            const auto client_it = clients.find(ready_fd);
-            if (client_it == clients.end()) {
-                continue;
-            }
-
-            // 关闭异常或断开的连接
-            if ((ready_events & (EPOLLERR | EPOLLHUP)) != 0 ||
-                ((ready_events & EPOLLIN) == 0 &&
-                 (ready_events & EPOLLRDHUP) != 0)) {
-                epoll_ctl(epoll_fd, EPOLL_CTL_DEL, ready_fd, nullptr);
-                clients.erase(client_it);
-                continue;
-            }
-
-            if ((ready_events & EPOLLIN) != 0) {
-                // 读取并组装请求帧
-                std::string frame;
-                const auto read_result = readAvailableFrame(client_it->second,
-                                                            frame);
-                if (read_result == ReadFrameResult::Incomplete) {
-                    continue;
-                }
-                if (read_result == ReadFrameResult::Closed) {
-                    epoll_ctl(epoll_fd, EPOLL_CTL_DEL, ready_fd, nullptr);
-                    clients.erase(client_it);
-                    continue;
-                }
-
-                // 将完整请求提交线程池
-                epoll_ctl(epoll_fd, EPOLL_CTL_DEL, ready_fd, nullptr);
-                const auto submitted = thread_pool->submit(
-                    [this, ready_fd, frame = std::move(frame),
-                     &completed_mutex, &completed_responses,
-                     reactor_wakeup_fd]() mutable {
-                        auto response_frame = handleRequest(frame);
-                        {
-                            std::lock_guard<std::mutex> lock(completed_mutex);
-                            completed_responses.push(
-                                {ready_fd, std::move(response_frame)});
-                        }
-
-                        // 通知 Reactor 处理响应
-                        uint64_t one = 1;
-                        while (write(reactor_wakeup_fd, &one, sizeof(one)) < 0 &&
-                               errno == EINTR) {
-                        }
-                    });
-                if (!submitted) {
-                    std::cerr
-                        << "rpc thread pool queue is full, reject connection"
-                        << std::endl;
-                    clients.erase(client_it);
-                }
-                continue;
-            }
-
-            if ((ready_events & EPOLLOUT) != 0) {
-                // 发送响应
-                auto& client = client_it->second;
-                bool send_failed = false;
-
-                while (client.sent_size < client.output.size()) {
-                    const auto sent = client.socket.sendSome(
-                        client.output.data() + client.sent_size,
-                        client.output.size() - client.sent_size);
-                    if (sent > 0) {
-                        client.sent_size += static_cast<std::size_t>(sent);
-                        continue;
-                    }
-                    if (sent < 0 && errno == EINTR) {
-                        continue;
-                    }
-                    if (sent < 0 &&
-                        (errno == EAGAIN || errno == EWOULDBLOCK)) {
-                        break;
-                    }
-                    send_failed = true;
-                    break;
-                }
-
-                if (send_failed) {
-                    epoll_ctl(epoll_fd, EPOLL_CTL_DEL, ready_fd, nullptr);
-                    clients.erase(client_it);
-                    continue;
-                }
-
-                if (client.sent_size == client.output.size()) {
-                    // 继续等待下一个请求
-                    client.reset();
-                    epoll_event read_event{};
-                    read_event.events = EPOLLIN | EPOLLRDHUP;
-                    read_event.data.fd = ready_fd;
-                    if (epoll_ctl(epoll_fd,
-                                  EPOLL_CTL_MOD,
-                                  ready_fd,
-                                  &read_event) < 0) {
-                        clients.erase(client_it);
-                    }
-                }
-            }
-        }
-    }
-
-    // 先停止心跳，避免注销后又被下一次心跳重新加入
+    eventLoop();
     stopHeartbeat();
-
-    // 停止请求处理线程池
-    thread_pool.reset();
-    clients.clear();
-    listener.reset();
-
-    {
-        std::lock_guard<std::mutex> lock(lifecycle_mutex_);
-        reactor_wakeup_fd_ = -1;
-        close(reactor_wakeup_fd);
-    }
-    close(epoll_fd);
-
+    cleanup();
     unregisterServices();
 }
 

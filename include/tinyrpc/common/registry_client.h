@@ -20,9 +20,9 @@ public:
     bool registerServiceEndpoint(const std::string& service_name,
                                  const Endpoint& service_endpoint);
 
-    // 续约服务端点
-    bool heartbeatServiceEndpoint(const std::string& service_name,
-                                  const Endpoint& service_endpoint);
+    // 发送服务心跳
+    bool sendHeartbeat(const std::string& service_name,
+                       const Endpoint& service_endpoint);
 
     // 主动注销服务端点
     bool unregisterServiceEndpoint(const std::string& service_name,

@@ -50,9 +50,8 @@ bool RegistryClient::registerServiceEndpoint(
 }
 
 // 向注册中心发送服务心跳
-bool RegistryClient::heartbeatServiceEndpoint(
-    const std::string& service_name,
-    const Endpoint& service_endpoint) {
+bool RegistryClient::sendHeartbeat(const std::string& service_name,
+                                   const Endpoint& service_endpoint) {
     auto socket = TcpSocket::connect(registry_endpoint_, timeout_ms_);
     if (!socket) {
         return false;

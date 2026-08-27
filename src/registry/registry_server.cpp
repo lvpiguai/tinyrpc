@@ -155,6 +155,7 @@ void RegistryServer::handleClient(TcpSocket client_socket) {
 void RegistryServer::cleanupLoop() {
     std::unique_lock<std::mutex> lock(mutex_);
     while (!cleanup_stopped_) {
+        // 等待下一次清理或停止通知
         cleanup_cv_.wait_for(lock, kCleanupInterval, [this]() {
             return cleanup_stopped_;
         });
@@ -162,6 +163,7 @@ void RegistryServer::cleanupLoop() {
             return;
         }
 
+        // 删除心跳超时的服务实例
         const auto now = std::chrono::steady_clock::now();
         for (auto service = service_endpoints_.begin();
              service != service_endpoints_.end();) {
