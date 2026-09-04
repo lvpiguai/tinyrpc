@@ -38,7 +38,8 @@ void testRequestRoundTrip() {
     expect(status.ok(), "decode request");
     expect(output.service_name == input.service_name, "preserve service name");
     expect(output.method_name == input.method_name, "preserve method name");
-    expect(output.body == input.body, "preserve binary request body");
+    expect(output.serialized_body == input.serialized_body,
+           "preserve binary request body");
 }
 
 void testResponseRoundTrip() {
@@ -57,7 +58,8 @@ void testResponseRoundTrip() {
     expect(status.ok(), "decode response");
     expect(output.success == input.success, "preserve response result");
     expect(output.error_message == input.error_message, "preserve error message");
-    expect(output.body == input.body, "preserve binary response body");
+    expect(output.serialized_body == input.serialized_body,
+           "preserve binary response body");
 }
 
 void testIncompleteSizeField() {
@@ -93,7 +95,7 @@ void testOversizedBody() {
     tinyrpc::RpcRequest request;
     request.service_name = "service";
     request.method_name = "method";
-    request.body.resize(tinyrpc::protocol_codec::kMaxBodySize + 1);
+    request.serialized_body.resize(tinyrpc::protocol_codec::kMaxBodySize + 1);
 
     std::string frame;
     const auto status = tinyrpc::protocol_codec::encode(request, frame);

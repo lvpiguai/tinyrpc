@@ -8,14 +8,14 @@ namespace tinyrpc {
 struct RpcRequest {
     std::string service_name;
     std::string method_name;
-    std::string body;
+    std::string serialized_body;
 };
 
 // RPC 响应在编码前、解码后的逻辑数据
 struct RpcResponse {
     bool success = true;
     std::string error_message;
-    std::string body;
+    std::string serialized_body;
 };
 
 } // namespace tinyrpc

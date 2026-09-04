@@ -215,8 +215,8 @@ void RpcChannel::CallMethod(const google::protobuf::MethodDescriptor* method,
     }
 
     // 序列化请求体
-    std::string request_body;
-    if (!request->SerializeToString(&request_body)) {
+    std::string serialized_request_body;
+    if (!request->SerializeToString(&serialized_request_body)) {
         fail("serialize request failed");
         return;
     }
@@ -225,7 +225,7 @@ void RpcChannel::CallMethod(const google::protobuf::MethodDescriptor* method,
     RpcRequest rpc_request{
         service_name,
         method->name(),
-        std::move(request_body)
+        std::move(serialized_request_body)
     };
 
     // 编码 RPC 请求帧
@@ -282,7 +282,7 @@ void RpcChannel::CallMethod(const google::protobuf::MethodDescriptor* method,
     }
 
     // 解析 protobuf 响应对象
-    if (!response->ParseFromString(rpc_response.body)) {
+    if (!response->ParseFromString(rpc_response.serialized_body)) {
         releaseConnection(connection, true);
         fail("parse response failed");
         return;

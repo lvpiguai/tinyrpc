@@ -54,10 +54,10 @@ RpcStatus deserializeHeader(std::string_view encoded_header,
 
 // 组装完整 RPC 帧：[header_size][header][body]
 RpcStatus buildFrame(const google::protobuf::Message& header,
-                     std::string_view body,
+                     std::string_view serialized_body,
                      std::string& frame) {
     // 限制消息体最大长度
-    if (body.size() > kMaxBodySize) {
+    if (serialized_body.size() > kMaxBodySize) {
         return {RpcErrorCode::BODY_TOO_LARGE, "rpc body too large"};
     }
 
@@ -74,18 +74,19 @@ RpcStatus buildFrame(const google::protobuf::Message& header,
 
     // 依次写入包头长度、包头和消息体
     frame.clear();
-    frame.reserve(kHeaderSizeFieldSize + encoded_header.size() + body.size());
+    frame.reserve(kHeaderSizeFieldSize + encoded_header.size() +
+                  serialized_body.size());
     frame.append(reinterpret_cast<const char*>(&network_header_size),
                  kHeaderSizeFieldSize);
     frame.append(encoded_header);
-    frame.append(body.data(), body.size());
+    frame.append(serialized_body.data(), serialized_body.size());
     return {};
 }
 
 // 将完整 RPC 帧切分为包头和消息体
 RpcStatus splitFrame(std::string_view frame,
                      std::string_view& header,
-                     std::string_view& body) {
+                     std::string_view& serialized_body) {
     // frame 必须包含完整的包头长度字段
     if (frame.size() < kHeaderSizeFieldSize) {
         return {RpcErrorCode::HEADER_PARSE_FAILED,
@@ -109,10 +110,10 @@ RpcStatus splitFrame(std::string_view frame,
 
     // 切分包头和消息体字节
     header = frame.substr(kHeaderSizeFieldSize, header_size);
-    body = frame.substr(kHeaderSizeFieldSize + header_size);
+    serialized_body = frame.substr(kHeaderSizeFieldSize + header_size);
 
     // 限制消息体最大长度
-    if (body.size() > kMaxBodySize) {
+    if (serialized_body.size() > kMaxBodySize) {
         return {RpcErrorCode::BODY_TOO_LARGE, "rpc body too large"};
     }
 
@@ -127,15 +128,15 @@ RpcStatus encode(const RpcRequest& request, std::string& frame) {
     RpcRequestHeader header;
     header.set_service_name(request.service_name);
     header.set_method_name(request.method_name);
-    return buildFrame(header, request.body, frame);
+    return buildFrame(header, request.serialized_body, frame);
 }
 
 // 解码 RPC 请求帧
 RpcStatus decode(std::string_view frame, RpcRequest& request) {
     // 切分包头和请求体
     std::string_view header;
-    std::string_view body;
-    auto status = splitFrame(frame, header, body);
+    std::string_view serialized_body;
+    auto status = splitFrame(frame, header, serialized_body);
     if (!status.ok()) {
         return status;
     }
@@ -150,7 +151,8 @@ RpcStatus decode(std::string_view frame, RpcRequest& request) {
     // 填充逻辑请求
     request.service_name = request_header.service_name();
     request.method_name = request_header.method_name();
-    request.body.assign(body.data(), body.size());
+    request.serialized_body.assign(serialized_body.data(),
+                                   serialized_body.size());
     return {};
 }
 
@@ -160,15 +162,15 @@ RpcStatus encode(const RpcResponse& response, std::string& frame) {
     RpcResponseHeader header;
     header.set_success(response.success);
     header.set_error_message(response.error_message);
-    return buildFrame(header, response.body, frame);
+    return buildFrame(header, response.serialized_body, frame);
 }
 
 // 解码 RPC 响应帧
 RpcStatus decode(std::string_view frame, RpcResponse& response) {
     // 切分包头和响应体
     std::string_view header;
-    std::string_view body;
-    auto status = splitFrame(frame, header, body);
+    std::string_view serialized_body;
+    auto status = splitFrame(frame, header, serialized_body);
     if (!status.ok()) {
         return status;
     }
@@ -183,7 +185,8 @@ RpcStatus decode(std::string_view frame, RpcResponse& response) {
     // 填充逻辑响应
     response.success = response_header.success();
     response.error_message = response_header.error_message();
-    response.body.assign(body.data(), body.size());
+    response.serialized_body.assign(serialized_body.data(),
+                                    serialized_body.size());
     return {};
 }
 

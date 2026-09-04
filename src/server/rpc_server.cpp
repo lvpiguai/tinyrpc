@@ -647,7 +647,7 @@ std::string RpcServer::handleRequest(const std::string& frame) {
         service->GetResponsePrototype(method).New());
 
     // 解析 protobuf 请求对象
-    if (!request->ParseFromString(rpc_request.body)) {
+    if (!request->ParseFromString(rpc_request.serialized_body)) {
         return encodeErrorResponse("parse request body failed");
     }
 
@@ -659,14 +659,14 @@ std::string RpcServer::handleRequest(const std::string& frame) {
                         nullptr);
 
     // 序列化 protobuf 响应对象
-    std::string response_body;
-    if (!response->SerializeToString(&response_body)) {
+    std::string serialized_response_body;
+    if (!response->SerializeToString(&serialized_response_body)) {
         return encodeErrorResponse("serialize response failed");
     }
 
     // 构造并编码成功响应
     RpcResponse rpc_response;
-    rpc_response.body = std::move(response_body);
+    rpc_response.serialized_body = std::move(serialized_response_body);
     return encodeRpcResponse(rpc_response);
 }
 
